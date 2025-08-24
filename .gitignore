@@ -1,0 +1,33 @@
+# Simulation outputs
+*.vcd
+*.lxt
+*.lxt2
+*.fst
+*.ghw
+
+# Compiled test executables
+test_*
+!tests/
+
+# Build artifacts
+*.out
+*.exe
+
+# Temporary files
+*~
+*.tmp
+*.bak
+*.swp
+.DS_Store
+
+# IDE files
+.vscode/
+*.sublime-*
+
+# Synthesis outputs (if added later)
+*.bit
+*.bin
+*.rpt
+*.log
+build/
+synth/
