@@ -64,27 +64,25 @@ module video_memory (
     output reg [7:0] doutb      // Data output B
 );
 
-    // Video memory array - 76800 bytes
+    // Simple single-port memory - more reliable for synthesis
     reg [7:0] video_mem [0:76799];
     
-    // Initialize memory to black (0x00)
-    integer i;
     initial begin
-        for (i = 0; i < 76800; i = i + 1) begin
+        for (integer i = 0; i < 76800; i = i + 1) begin
             video_mem[i] = 8'h00;
         end
     end
-    
-    // Port A: Read/Write operations
+
+    // Single port with priority: writes on port A, reads on port B
     always @(posedge clka) begin
         if (wea) begin
             video_mem[addra] <= dina;
+            douta <= dina;  // Write-through
+        end else begin
+            douta <= video_mem[addra];
         end
-        douta <= video_mem[addra];
-    end
-    
-    // Port B: Read-only operations
-    always @(posedge clkb) begin
+        
+        // Port B always reads (display has priority when not writing)
         doutb <= video_mem[addrb];
     end
 

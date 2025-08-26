@@ -115,6 +115,7 @@ module cpu_interface (
     always @(*) begin
         if (phi2 && chip_enable && !rw && reset_n) begin
             case (addr)
+                4'h0: registers[0] = data_in;  // Mode control
                 4'h1: registers[1] = data_in;  // Instruction
                 4'h2: registers[2] = data_in;  // Arg 0
                 4'h3: registers[3] = data_in;  // Arg 1  
@@ -128,7 +129,6 @@ module cpu_interface (
                 4'hB: registers[11] = data_in; // Arg 9
                 4'hC: registers[12] = data_in; // Arg 10
                 // Note: $000D, $000E, $000F are read-only
-                // Note: Mode control (register[0]) handled separately in clocked logic
             endcase
         end
     end
@@ -138,8 +138,7 @@ module cpu_interface (
     always @(posedge phi2 or negedge reset_n) begin
         if (!reset_n) begin
             // Reset only registers not driven by combinational logic
-            registers[0] <= 8'h00;   // Mode control - handled in clocked domain
-            // registers[1] through [12] are driven by combinational logic above
+            // registers[0] through [12] are driven by combinational logic above
             registers[13] <= 8'h00;  // Reserved
             registers[14] <= 8'h00;  // Reserved  
             registers[15] <= 8'h00;  // Reserved
@@ -155,11 +154,8 @@ module cpu_interface (
             prev_instruction_busy <= instruction_busy;
             instruction_start <= 1'b0; // Default to no start pulse
             
-            // Handle mode control register separately (needs clocked behavior)
-            if (chip_enable && !rw && addr == 4'h0) begin
-                registers[0] <= data_in; // Mode control
-                mode_control <= data_in;
-            end
+            // Update mode_control from register[0] (driven by combinational logic)
+            mode_control <= registers[0];
             
             // Check if this write should trigger instruction execution
             if (chip_enable && !rw && addr == execute_addr && valid_instruction) begin

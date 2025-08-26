@@ -65,6 +65,10 @@ module vga_card_top (
     wire [7:0] video_data_in, video_data_out;
     wire video_we;
     
+    // Graphics display interface
+    wire [16:0] display_video_addr;
+    wire [7:0] display_video_data;
+    
     wire [11:0] font_addr;
     wire [7:0] font_data;
     
@@ -188,6 +192,8 @@ module vga_card_top (
         .video_data_in(video_data_in),
         .video_data_out(video_data_out),
         .video_we(video_we),
+        .display_video_addr(display_video_addr),
+        .display_video_data(display_video_data),
         .palette_addr(palette_addr_graphics),
         .palette_data(palette_data_read_a), // Graphics uses single palette port
         .rgb_out(graphics_rgb_out),
@@ -217,8 +223,8 @@ module vga_card_top (
         .dina(video_data_out),
         .douta(video_data_in),
         .wea(video_we),
-        .addrb(video_addr_ctrl),  // Use same address for both ports
-        .doutb()                  // Not used - single unified address
+        .addrb(display_video_addr),  // Display read address from graphics module
+        .doutb(display_video_data)   // Display data to graphics module
     );
     
     // Font ROM

@@ -92,6 +92,10 @@ module graphics_mode_module (
     reg [7:0] result_pixel_data_reg;
     assign result_pixel_data = result_pixel_data_reg;
     
+    // Instruction start edge detection (synchronize to video_clk domain)
+    reg instruction_start_sync1, instruction_start_sync2, instruction_start_prev;
+    wire instruction_start_edge;
+    
     // Controller address (internal)
     reg [16:0] video_addr_ctrl_internal;
     
@@ -107,8 +111,8 @@ module graphics_mode_module (
     
     // Mode-specific parameters
     reg [15:0] mode_width, mode_height;
-    reg [3:0] mode_bits_per_pixel;      // Changed to 4 bits to hold value 8
-    reg [2:0] mode_pixels_per_byte;
+    reg [3:0] mode_bits_per_pixel;      // 4 bits to hold value 8
+    reg [3:0] mode_pixels_per_byte;     // Changed to 4 bits to hold value 8
     reg mode_has_pages;
     reg [16:0] mode_page_size;
     
@@ -191,7 +195,7 @@ module graphics_mode_module (
             case (mode_bits_per_pixel)
                 4'd1: pixel_in_byte = x[2:0];               // 8 pixels per byte
                 4'd2: pixel_in_byte = {x[1:0], 1'b0};       // 4 pixels per byte, 2 bits each
-                4'd4: pixel_in_byte = {x[0], 2'b00};        // 2 pixels per byte, 4 bits each
+                4'd4: pixel_in_byte = x[0] ? 3'b000 : 3'b100;     // 2 pixels per byte: X odd=0, X even=4
                 4'd8: pixel_in_byte = 3'b000;               // 1 pixel per byte
                 default: pixel_in_byte = 3'b000;
             endcase
@@ -233,6 +237,22 @@ module graphics_mode_module (
     // GRAPHICS CONTROLLER STATE MACHINE
     //========================================
     
+    // Synchronize instruction_start to video_clk domain
+    always @(posedge video_clk or negedge reset_n) begin
+        if (!reset_n) begin
+            instruction_start_sync1 <= 1'b0;
+            instruction_start_sync2 <= 1'b0; 
+            instruction_start_prev <= 1'b0;
+        end else begin
+            instruction_start_sync1 <= instruction_start;
+            instruction_start_sync2 <= instruction_start_sync1;
+            instruction_start_prev <= instruction_start_sync2;
+        end
+    end
+    
+    assign instruction_start_edge = instruction_start_sync2 & ~instruction_start_prev;
+
+    // Instruction argument capture and state machine
     always @(posedge video_clk or negedge reset_n) begin
         if (!reset_n) begin
             state <= IDLE;
@@ -260,7 +280,7 @@ module graphics_mode_module (
             case (state)
                 IDLE: begin
                     instruction_busy <= 1'b0;
-                    if (instruction_start) begin
+                    if (instruction_start_edge) begin
                         // Capture arguments
                         inst_arg0 <= arg_data[0];
                         inst_arg1 <= arg_data[1];
@@ -316,10 +336,10 @@ module graphics_mode_module (
                             if (pixel_cursor_y == mode_height - 1) begin
                                 pixel_cursor_y <= 16'h0000;
                             end else begin
-                                pixel_cursor_y <= pixel_cursor_y + 1;
+                                pixel_cursor_y <= pixel_cursor_y + 16'd1;
                             end
                         end else begin
-                            pixel_cursor_x <= pixel_cursor_x + 1;
+                            pixel_cursor_x <= pixel_cursor_x + 16'd1;
                         end
                         
                         state <= IDLE;
@@ -386,6 +406,9 @@ module graphics_mode_module (
                     video_we <= 1'b1;
                     
                     if (clear_pixel_counter == mode_page_size - 1) begin
+                        // Done clearing - reset pixel cursor to home position
+                        pixel_cursor_x <= 16'h0000;
+                        pixel_cursor_y <= 16'h0000;
                         state <= IDLE;
                         instruction_finished <= 1'b1;
                     end else begin
@@ -477,7 +500,9 @@ module graphics_mode_module (
     
     // Display position calculations
     wire [15:0] display_x, display_y;
+    reg [15:0] display_x_reg, display_y_reg;
     wire display_in_bounds;
+    reg display_in_bounds_reg;
     reg [7:0] display_pixel_value;
     
     // Scale coordinates based on mode
@@ -488,15 +513,22 @@ module graphics_mode_module (
     
     assign display_in_bounds = (display_x < mode_width) && (display_y < mode_height);
     
+    // Pipeline display coordinates for BRAM read delay
+    always @(posedge video_clk) begin
+        display_x_reg <= display_x;
+        display_y_reg <= display_y;
+        display_in_bounds_reg <= display_in_bounds;
+    end
+    
     // Extract pixel value from video memory
     wire [16:0] display_addr;
     assign display_addr = calc_pixel_address(display_x, display_y, current_page);
     
     always @(*) begin
         case (mode_bits_per_pixel)
-            1: display_pixel_value = (display_video_data >> (7 - calc_bit_position(display_x[15:0]))) & 8'h01;
-            2: display_pixel_value = (display_video_data >> (6 - calc_bit_position(display_x[15:0]))) & 8'h03;
-            4: display_pixel_value = (display_video_data >> (4 - calc_bit_position(display_x[15:0]))) & 8'h0F;
+            1: display_pixel_value = (display_video_data >> (7 - calc_bit_position(display_x_reg))) & 8'h01;
+            2: display_pixel_value = (display_video_data >> (6 - calc_bit_position(display_x_reg))) & 8'h03;
+            4: display_pixel_value = (display_video_data >> (4 - calc_bit_position(display_x_reg))) & 8'h0F;
             8: display_pixel_value = display_video_data;
             default: display_pixel_value = 8'h00;
         endcase
@@ -511,14 +543,14 @@ module graphics_mode_module (
         end else begin
             pixel_valid <= display_active;
             
-            if (display_active && display_in_bounds) begin
+            if (display_active && display_in_bounds_reg) begin
                 if (current_mode == MODE_320x240x64) begin
                     // Direct 6-bit color output
                     rgb_out <= display_pixel_value[5:0];
                 end else begin
-                    // Palette lookup
+                    // Palette lookup - register palette address, use previous cycle's data
                     palette_addr <= display_pixel_value[3:0];
-                    rgb_out <= palette_data;
+                    rgb_out <= palette_data; // Uses palette data from previous address
                 end
             end else begin
                 // Outside display area - output black
