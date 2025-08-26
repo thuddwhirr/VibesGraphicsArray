@@ -69,7 +69,7 @@ module cpu_interface (
     reg [3:0] execute_addr;
     always @(*) begin
         case (registers[1]) // instruction register $0001
-            TEXT_WRITE:      execute_addr = 4'h3; // $0003
+            TEXT_WRITE:      execute_addr = 4'h3; // $0003 - execute on character write
             TEXT_POSITION:   execute_addr = 4'h3; // $0003  
             TEXT_CLEAR:      execute_addr = 4'h2; // $0002
             GET_TEXT_AT:     execute_addr = 4'h3; // $0003
@@ -137,10 +137,12 @@ module cpu_interface (
     reg prev_status_read;
     always @(posedge phi2 or negedge reset_n) begin
         if (!reset_n) begin
-            // Reset all registers
-            for (integer i = 0; i < 16; i = i + 1) begin
-                registers[i] <= 8'h00;
-            end
+            // Reset only registers not driven by combinational logic
+            registers[0] <= 8'h00;   // Mode control - handled in clocked domain
+            // registers[1] through [12] are driven by combinational logic above
+            registers[13] <= 8'h00;  // Reserved
+            registers[14] <= 8'h00;  // Reserved  
+            registers[15] <= 8'h00;  // Reserved
             status_reg <= 8'h80; // Ready bit set on reset
             prev_status_read <= 1'b0;
             mode_control <= 8'h00;

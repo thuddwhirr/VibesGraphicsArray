@@ -16,7 +16,7 @@ module text_mode_module (
     output reg instruction_error,        // High if error occurred
     
     // Character buffer interface (dual port BRAM)
-    output wire [10:0] char_addr,    // Character memory address (unified)
+    output wire [11:0] char_addr,    // Character memory address (unified) - 12-bit for 2560 entries
     input wire [15:0] char_data_in, // Character data read from memory
     output reg [15:0] char_data_out,// Character data to write to memory
     output reg char_we,             // Write enable for character memory
@@ -25,9 +25,11 @@ module text_mode_module (
     output reg [11:0] font_addr,    // Font ROM address
     input wire [7:0] font_data,     // 8-bit font row data
     
-    // Palette interface
-    output reg [3:0] palette_addr,  // Palette address (4-bit color index)
-    input wire [5:0] palette_data,  // 6-bit RGB color output
+    // Palette interface - dual port
+    output reg [3:0] palette_addr_fg,  // Foreground palette address
+    output reg [3:0] palette_addr_bg,  // Background palette address
+    input wire [5:0] palette_data_fg,  // Foreground RGB output
+    input wire [5:0] palette_data_bg,  // Background RGB output
     
     // RGB output
     output reg [5:0] rgb_out,       // 6-bit RGB to external DAC
@@ -52,15 +54,16 @@ module text_mode_module (
     localparam GET_TEXT_AT = 8'h03;
     
     // Text controller state machine states
-    localparam IDLE = 3'b000;
-    localparam TEXT_WRITE_EXEC = 3'b001;
-    localparam TEXT_POSITION_EXEC = 3'b010;
-    localparam TEXT_CLEAR_EXEC = 3'b011;
-    localparam GET_TEXT_EXEC = 3'b100;
-    localparam GET_TEXT_READ = 3'b101;  // New state for memory read timing
-    localparam SCROLL_EXEC = 3'b110;    // Moved to accommodate new state
+    localparam IDLE = 4'b0000;
+    localparam TEXT_WRITE_EXEC = 4'b0001;
+    localparam TEXT_WRITE_COMPLETE = 4'b0010;
+    localparam TEXT_POSITION_EXEC = 4'b0011;
+    localparam TEXT_CLEAR_EXEC = 4'b0100;
+    localparam GET_TEXT_EXEC = 4'b0101;
+    localparam GET_TEXT_READ = 4'b0110;  // New state for memory read timing
+    localparam SCROLL_EXEC = 4'b0111;
     
-    reg [2:0] state;
+    reg [3:0] state;
     
     // Text controller registers
     reg [6:0] cursor_col;           // Cursor column (0-79)
@@ -68,6 +71,7 @@ module text_mode_module (
     reg [4:0] scroll_offset;        // Current scroll position (0-30)
     reg [4:0] clear_row_counter;    // Counter for clearing operations
     reg [6:0] clear_col_counter;    // Counter for clearing operations
+    reg [7:0] default_attributes;   // Default character attributes for 0x00 and scrolling
     
     // Instruction arguments (latched on instruction_start)
     reg [7:0] inst_arg0, inst_arg1, inst_arg2;
@@ -81,8 +85,8 @@ module text_mode_module (
     assign result_char_attr = result_char_attr_reg;
     
     // Address management - separate controller and display addresses
-    reg [10:0] char_addr_ctrl_internal;  // Internal controller address
-    reg [10:0] disp_char_addr;          // Display address
+    reg [11:0] char_addr_ctrl_internal;  // Internal controller address (12-bit)
+    reg [11:0] disp_char_addr;          // Display address (12-bit)
     
     // Multiplex address based on whether we're writing OR doing GetTextAt read
     wire controller_needs_addr = char_we || (state == GET_TEXT_EXEC) || (state == GET_TEXT_READ);
@@ -92,6 +96,24 @@ module text_mode_module (
     // TEXT CONTROLLER STATE MACHINE
     //========================================
     
+    // Synchronize instruction_start to video_clk domain
+    reg instruction_start_sync1, instruction_start_sync2, instruction_start_prev;
+    wire instruction_start_edge;
+    
+    always @(posedge video_clk or negedge reset_n) begin
+        if (!reset_n) begin
+            instruction_start_sync1 <= 1'b0;
+            instruction_start_sync2 <= 1'b0; 
+            instruction_start_prev <= 1'b0;
+        end else begin
+            instruction_start_sync1 <= instruction_start;
+            instruction_start_sync2 <= instruction_start_sync1;
+            instruction_start_prev <= instruction_start_sync2;
+        end
+    end
+    
+    assign instruction_start_edge = instruction_start_sync2 & ~instruction_start_prev;
+
     // Instruction argument capture and state machine
     always @(posedge video_clk or negedge reset_n) begin
         if (!reset_n) begin
@@ -106,7 +128,8 @@ module text_mode_module (
             char_data_out <= 16'h0000;
             clear_row_counter <= 5'h00;
             clear_col_counter <= 7'h00;
-            char_addr_ctrl_internal <= 11'h000;
+            char_addr_ctrl_internal <= 12'h000;
+            default_attributes <= 8'h01; // White on black by default (fg=1, bg=0)
         end else begin
             // Default values
             instruction_finished <= 1'b0;
@@ -116,7 +139,7 @@ module text_mode_module (
             case (state)
                 IDLE: begin
                     instruction_busy <= 1'b0;
-                    if (instruction_start) begin
+                    if (instruction_start_edge) begin
                         // Capture arguments
                         inst_arg0 <= arg_data[0];
                         inst_arg1 <= arg_data[1];
@@ -136,6 +159,7 @@ module text_mode_module (
                                 instruction_busy <= 1'b1;
                                 clear_row_counter <= 5'h00;
                                 clear_col_counter <= 7'h00;
+                                default_attributes <= arg_data[0]; // Use arg_data directly, not inst_arg0
                             end
                             GET_TEXT_AT: begin
                                 state <= GET_TEXT_EXEC;
@@ -150,12 +174,12 @@ module text_mode_module (
                 
                 TEXT_WRITE_EXEC: begin
                     // Write character at current cursor position
-                    char_addr_ctrl_internal <= ((cursor_row + scroll_offset) % TOTAL_ROWS) * CHARS_PER_ROW + cursor_col;
-                    char_data_out <= {inst_arg0, inst_arg1}; // {attributes, character}
+                    char_addr_ctrl_internal <= ((cursor_row + scroll_offset) % TOTAL_ROWS) * 7'd80 + cursor_col;
+                    // Use default attributes if arg0 is 0x00, otherwise use provided attributes
+                    char_data_out <= {(inst_arg0 == 8'h00) ? default_attributes : inst_arg0, inst_arg1}; // {attributes, character}
                     char_we <= 1'b1;
                     
-                    
-                    // Advance cursor
+                    // Advance cursor and move to completion state
                     if (cursor_col == CHARS_PER_ROW - 1) begin
                         cursor_col <= 7'h00;
                         if (cursor_row == VISIBLE_ROWS - 1) begin
@@ -164,14 +188,19 @@ module text_mode_module (
                             state <= SCROLL_EXEC; // Clear the new line
                         end else begin
                             cursor_row <= cursor_row + 1;
-                            state <= IDLE;
-                            instruction_finished <= 1'b1;
+                            state <= TEXT_WRITE_COMPLETE;
                         end
                     end else begin
                         cursor_col <= cursor_col + 1;
-                        state <= IDLE;
-                        instruction_finished <= 1'b1;
+                        state <= TEXT_WRITE_COMPLETE;
                     end
+                end
+                
+                TEXT_WRITE_COMPLETE: begin
+                    // Complete the write operation
+                    char_we <= 1'b0;
+                    state <= IDLE;
+                    instruction_finished <= 1'b1;
                 end
                 
                 TEXT_POSITION_EXEC: begin
@@ -188,14 +217,17 @@ module text_mode_module (
                 
                 TEXT_CLEAR_EXEC: begin
                     // Clear all character memory with provided attributes
-                    char_addr_ctrl_internal <= clear_row_counter * CHARS_PER_ROW + clear_col_counter;
+                    char_addr_ctrl_internal <= clear_row_counter * 7'd80 + clear_col_counter;
                     char_data_out <= {inst_arg0, 8'h00}; // {attributes, null char}
                     char_we <= 1'b1;
                     
                     if (clear_col_counter == CHARS_PER_ROW - 1) begin
                         clear_col_counter <= 7'h00;
                         if (clear_row_counter == TOTAL_ROWS - 1) begin
-                            // Done clearing
+                            // Done clearing - reset cursor and scroll position
+                            cursor_col <= 7'h00;
+                            cursor_row <= 5'h00;
+                            scroll_offset <= 5'h00;
                             state <= IDLE;
                             instruction_finished <= 1'b1;
                         end else begin
@@ -209,7 +241,7 @@ module text_mode_module (
                 GET_TEXT_EXEC: begin
                     // Set address for character read (cycle 1)
                     if (inst_arg0 < VISIBLE_ROWS && inst_arg1 < CHARS_PER_ROW) begin
-                        char_addr_ctrl_internal <= ((inst_arg0 + scroll_offset) % TOTAL_ROWS) * CHARS_PER_ROW + inst_arg1;
+                        char_addr_ctrl_internal <= ((inst_arg0 + scroll_offset) % TOTAL_ROWS) * 7'd80 + inst_arg1;
                         state <= GET_TEXT_READ; // Wait one cycle for memory read
                     end else begin
                         instruction_error <= 1'b1;
@@ -227,9 +259,9 @@ module text_mode_module (
                 end
                 
                 SCROLL_EXEC: begin
-                    // Clear the new line after scrolling
-                    char_addr_ctrl_internal <= ((scroll_offset - 1 + TOTAL_ROWS) % TOTAL_ROWS) * CHARS_PER_ROW + clear_col_counter;
-                    char_data_out <= 16'h0000; // Clear character and attributes
+                    // Clear the new line after scrolling using default attributes
+                    char_addr_ctrl_internal <= ((scroll_offset - 1 + TOTAL_ROWS) % TOTAL_ROWS) * 7'd80 + clear_col_counter;
+                    char_data_out <= {default_attributes, 8'h00}; // Clear character with default background
                     char_we <= 1'b1;
                     
                     if (clear_col_counter == CHARS_PER_ROW - 1) begin
@@ -244,53 +276,62 @@ module text_mode_module (
         end
     end
     
+
     //========================================
-    // TEXT RENDERER PIPELINE
+    // Non-pipeline Text Renderer
     //========================================
+
+
+    wire [7:0]column_pos;          //the character column currently being rendered (hcount / 80)
+    wire [7:0]row_pos;             //the character row currently being rendered (vcount / 30)
+    wire [7:0]pixel_x;              //the relative x coordinate of the character being rendered (hcount % 8)
+    wire [7:0]pixel_y;              //the relavite y coordinate of the character being rendered (vcount % 16)
+
+
+    wire [7:0] attributes_data;          //attributes half of the character data
+    wire [3:0] foreground_index;          //foreground portion of current returned attribute
+    wire [3:0] background_index;          //background portion of current returned attribute
+    wire blink_bit;                      //blink flag from attributes
+    wire [7:0] character_code;      //character code returned from currrent returned charecter
+    wire [7:0] font_row;            //font row for the character_code and the current pixel_y; 
+
+    wire [5:0] foreground_rgb;      //rgb data returned for the foreground index; 
+    wire [5:0] background_rgb;      //rgb data returned for the background index
     
-    // Position calculations
-    wire [6:0] char_col_disp;       // Character column (0-79)
-    wire [4:0] char_row_disp;       // Character row (0-29)
-    wire [2:0] pixel_x;             // Pixel within character (0-7)
-    wire [3:0] pixel_y;             // Pixel row within character (0-15)
-    wire [4:0] actual_row_disp;     // Actual row accounting for scroll
-    
-    // Assign position calculations
-    assign char_col_disp = hcount[9:3];  // hcount / 8
-    assign char_row_disp = vcount[8:4];  // vcount / 16  
-    assign pixel_x = hcount[2:0];        // hcount % 8
-    assign pixel_y = vcount[3:0];        // vcount % 16
-    
-    // Account for scrolling - wrap around the ring buffer
-    assign actual_row_disp = (char_row_disp + scroll_offset >= TOTAL_ROWS) ? 
-                            (char_row_disp + scroll_offset - TOTAL_ROWS) : 
-                            (char_row_disp + scroll_offset);
-    
-    // Pipeline registers for display
-    reg [6:0] disp_char_col_pipe [0:2];
-    reg [4:0] disp_actual_row_pipe [0:2];
-    reg [2:0] disp_pixel_x_pipe [0:2];
-    reg [3:0] disp_pixel_y_pipe [0:2];
-    reg disp_active_pipe [0:2];
-    
-    // Character data pipeline
-    reg [7:0] disp_char_code_pipe [0:1];
-    reg [7:0] disp_char_attr_pipe [0:1];
-    reg [3:0] disp_fg_color_pipe [0:1];
-    reg [2:0] disp_bg_color_pipe [0:1];
-    reg disp_blink_pipe [0:1];
-    
-    // Font data pipeline
-    reg [7:0] disp_font_row_pipe;
-    reg disp_font_pixel;
-    
-    // Pixel generation signals
-    reg show_pixel;
-    
-    // Blink counter for blinking text
+    // Blink support
     reg [24:0] blink_counter;
     wire blink_state;
-    
+
+    assign column_pos = (hcount < 640) ? (hcount + 2) / 8 : 10'd0;
+    assign row_pos = (vcount < 480) ? vcount / 16 : 10'd0;
+    assign pixel_x = hcount % 4'd8;
+    assign pixel_y = (hcount < 640) ? vcount % 5'd16 : (vcount + 1) % 5'd16;
+
+    //calculate address to pass to character memory. Use the shifted column, which will change 2 clock cycles before the actual column. 
+    assign disp_char_addr = (((scroll_offset + row_pos) % TOTAL_ROWS) * 8'd80) + column_pos;
+
+    //read the output of character memory based on last cycle's address. 
+    assign attributes_data = char_data_in[15:8];
+    assign character_code = char_data_in[7:0];
+    assign foreground_index = attributes_data[3:0]; 
+    assign background_index = attributes_data[6:4];  // bits 6-4 for background (3 bits)
+    assign blink_bit = attributes_data[7];           // bit 7 for blink
+
+    //set the font address to the character code * 16 rows + the current pixel_y.
+    //this is based on the char code requested last cycle, which is based on the char requested 2 cycles ago
+    assign font_addr = (character_code * 8'd16) + pixel_y;
+
+    //read the output of font rom
+    assign font_row = font_data;
+
+    //set foreground and background rgb from parallel palette lookups
+    assign foreground_rgb = palette_data_fg;
+    assign background_rgb = palette_data_bg;
+
+    //set both palette addresses for parallel lookup
+    assign palette_addr_fg = foreground_index;
+    assign palette_addr_bg = background_index;
+
     // Generate blink timing (~1.5Hz blink rate)
     always @(posedge video_clk or negedge reset_n) begin
         if (!reset_n) begin
@@ -301,131 +342,19 @@ module text_mode_module (
     end
     assign blink_state = blink_counter[24]; // ~1.5Hz blink
     
-    // Pipeline stage 0: Address calculation for display
-    always @(posedge video_clk or negedge reset_n) begin
-        if (!reset_n) begin
-            disp_char_col_pipe[0] <= 7'h00;
-            disp_actual_row_pipe[0] <= 5'h00;
-            disp_pixel_x_pipe[0] <= 3'h0;
-            disp_pixel_y_pipe[0] <= 4'h0;
-            disp_active_pipe[0] <= 1'b0;
-            disp_char_addr <= 11'h000;
+    // Pixel visibility with blink support
+    wire show_pixel = font_row[7-pixel_x] && (!blink_bit || blink_state);
+    
+    //Register rgb_out to prevent timing glitches that cause color bleeding
+    always @(posedge video_clk) begin
+        pixel_valid <= display_active;
+        
+        // Register rgb_out for stable VGA timing
+        if (display_active) begin
+            rgb_out <= show_pixel ? foreground_rgb : background_rgb;
         end else begin
-            // Pipeline current position
-            disp_char_col_pipe[0] <= char_col_disp;
-            disp_actual_row_pipe[0] <= actual_row_disp;
-            disp_pixel_x_pipe[0] <= pixel_x;
-            disp_pixel_y_pipe[0] <= pixel_y;
-            disp_active_pipe[0] <= display_active;
-            
-            // Calculate character memory address for display
-            // Need to look ahead by 2 pixels for pipeline timing
-            if (hcount >= 798) begin // Wrap to next line
-                disp_char_addr <= ((actual_row_disp + 1) >= TOTAL_ROWS ? 0 : (actual_row_disp + 1)) * CHARS_PER_ROW;
-            end else begin
-                disp_char_addr <= actual_row_disp * CHARS_PER_ROW + ((hcount + 2) >> 3);
-            end
+            rgb_out <= 6'd0;
         end
     end
-    
-    // Pipeline stage 1: Character lookup and decode for display
-    always @(posedge video_clk or negedge reset_n) begin
-        if (!reset_n) begin
-            disp_char_col_pipe[1] <= 7'h00;
-            disp_actual_row_pipe[1] <= 5'h00;
-            disp_pixel_x_pipe[1] <= 3'h0;
-            disp_pixel_y_pipe[1] <= 4'h0;
-            disp_active_pipe[1] <= 1'b0;
-            disp_char_code_pipe[0] <= 8'h00;
-            disp_char_attr_pipe[0] <= 8'h00;
-            disp_fg_color_pipe[0] <= 4'h0;
-            disp_bg_color_pipe[0] <= 3'h0;
-            disp_blink_pipe[0] <= 1'b0;
-            font_addr <= 12'h000;
-        end else begin
-            // Pipeline position
-            disp_char_col_pipe[1] <= disp_char_col_pipe[0];
-            disp_actual_row_pipe[1] <= disp_actual_row_pipe[0];
-            disp_pixel_x_pipe[1] <= disp_pixel_x_pipe[0];
-            disp_pixel_y_pipe[1] <= disp_pixel_y_pipe[0];
-            disp_active_pipe[1] <= disp_active_pipe[0];
-            
-            // Decode character data
-            disp_char_code_pipe[0] <= char_data_in[7:0];    // Low byte = character
-            disp_char_attr_pipe[0] <= char_data_in[15:8];   // High byte = attributes
-            disp_fg_color_pipe[0] <= char_data_in[11:8];    // Bits 11-8 = foreground color
-            disp_bg_color_pipe[0] <= char_data_in[14:12];   // Bits 14-12 = background color  
-            disp_blink_pipe[0] <= char_data_in[15];         // Bit 15 = blink
-            
-            // Calculate font ROM address
-            font_addr <= {char_data_in[7:0], disp_pixel_y_pipe[0]}; // {char_code, row_in_char}
-        end
-    end
-    
-    // Pipeline stage 2: Font lookup for display
-    always @(posedge video_clk or negedge reset_n) begin
-        if (!reset_n) begin
-            disp_char_col_pipe[2] <= 7'h00;
-            disp_actual_row_pipe[2] <= 5'h00;
-            disp_pixel_x_pipe[2] <= 3'h0;
-            disp_pixel_y_pipe[2] <= 4'h0;
-            disp_active_pipe[2] <= 1'b0;
-            disp_char_code_pipe[1] <= 8'h00;
-            disp_char_attr_pipe[1] <= 8'h00;
-            disp_fg_color_pipe[1] <= 4'h0;
-            disp_bg_color_pipe[1] <= 3'h0;
-            disp_blink_pipe[1] <= 1'b0;
-            disp_font_row_pipe <= 8'h00;
-        end else begin
-            // Pipeline position and character data
-            disp_char_col_pipe[2] <= disp_char_col_pipe[1];
-            disp_actual_row_pipe[2] <= disp_actual_row_pipe[1];
-            disp_pixel_x_pipe[2] <= disp_pixel_x_pipe[1];
-            disp_pixel_y_pipe[2] <= disp_pixel_y_pipe[1];
-            disp_active_pipe[2] <= disp_active_pipe[1];
-            disp_char_code_pipe[1] <= disp_char_code_pipe[0];
-            disp_char_attr_pipe[1] <= disp_char_attr_pipe[0];
-            disp_fg_color_pipe[1] <= disp_fg_color_pipe[0];
-            disp_bg_color_pipe[1] <= disp_bg_color_pipe[0];
-            disp_blink_pipe[1] <= disp_blink_pipe[0];
-            
-            // Capture font row data
-            disp_font_row_pipe <= font_data;
-        end
-    end
-    
-    // Pipeline stage 3: Pixel generation and color lookup
-    always @(posedge video_clk or negedge reset_n) begin
-        if (!reset_n) begin
-            disp_font_pixel <= 1'b0;
-            palette_addr <= 4'h0;
-            pixel_valid <= 1'b0;
-            rgb_out <= 6'h00;
-            show_pixel <= 1'b0;
-        end else begin
-            pixel_valid <= disp_active_pipe[2];
-            
-            if (disp_active_pipe[2]) begin
-                // Extract the specific pixel from the font row
-                disp_font_pixel <= disp_font_row_pipe[7 - disp_pixel_x_pipe[2]]; // MSB first
-                
-                // Determine if we should show the pixel (handle blinking)
-                show_pixel <= disp_font_pixel && (!disp_blink_pipe[1] || blink_state);
-                
-                // Select foreground or background color
-                if (show_pixel) begin
-                    palette_addr <= disp_fg_color_pipe[1];   // Foreground
-                end else begin
-                    palette_addr <= {1'b0, disp_bg_color_pipe[1]}; // Background (extend to 4 bits)
-                end
-                
-                // Output final RGB (palette lookup happens next clock)
-                rgb_out <= palette_data;
-            end else begin
-                // Outside display area - output black
-                rgb_out <= 6'h00;
-            end
-        end
-    end
-    
+
 endmodule

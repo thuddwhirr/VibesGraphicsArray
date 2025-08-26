@@ -8,13 +8,13 @@ module character_buffer (
     input wire reset_n,         // Active low reset
     
     // Port A: Read/Write for text controller state machine
-    input wire [10:0] addra,    // Address A (0-2559)
+    input wire [11:0] addra,    // Address A (0-2559) - needs 12 bits
     input wire [15:0] dina,     // Data input A
     output reg [15:0] douta,    // Data output A
     input wire wea,             // Write enable A
     
     // Port B: Read-only for text renderer pipeline
-    input wire [10:0] addrb,    // Address B (0-2559)
+    input wire [11:0] addrb,    // Address B (0-2559) - needs 12 bits
     output reg [15:0] doutb     // Data output B
 );
 
@@ -123,9 +123,11 @@ module color_palette (
     input wire clk,             // Clock
     input wire reset_n,         // Active low reset
     
-    // Read interface
-    input wire [3:0] read_addr, // Read address (0-15)
-    output reg [5:0] read_data, // 6-bit RGB output
+    // Dual read interface
+    input wire [3:0] read_addr_a, // Read address A (0-15) - foreground
+    output reg [5:0] read_data_a, // 6-bit RGB output A
+    input wire [3:0] read_addr_b, // Read address B (0-15) - background
+    output reg [5:0] read_data_b, // 6-bit RGB output B
     
     // Write interface (for palette updates)
     input wire [3:0] write_addr,// Write address (0-15)
@@ -156,9 +158,10 @@ module color_palette (
         palette_mem[15] = 6'b101111; // Light Blue
     end
     
-    // Read operation
+    // Dual read operations
     always @(posedge clk) begin
-        read_data <= palette_mem[read_addr];
+        read_data_a <= palette_mem[read_addr_a];
+        read_data_b <= palette_mem[read_addr_b];
     end
     
     // Write operation

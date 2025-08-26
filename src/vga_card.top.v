@@ -57,7 +57,7 @@ module vga_card_top (
     wire [7:0] final_result_0, final_result_1;
     
     // Memory interface signals
-    wire [10:0] char_addr_ctrl;
+    wire [11:0] char_addr_ctrl;  // 12-bit for 2560 character buffer entries
     wire [15:0] char_data_in, char_data_out;
     wire char_we;
     
@@ -69,15 +69,16 @@ module vga_card_top (
     wire [7:0] font_data;
     
     // Palette interface signals
-    wire [3:0] palette_addr_text, palette_addr_graphics;
-    wire [3:0] palette_addr_read;
-    wire [5:0] palette_data_read;
+    wire [3:0] palette_addr_text_fg, palette_addr_text_bg, palette_addr_graphics;
+    wire [3:0] palette_addr_read_a, palette_addr_read_b;
+    wire [5:0] palette_data_read_a, palette_data_read_b;
     wire [3:0] palette_addr_write;
     wire [5:0] palette_data_write;
     wire palette_we;
     
-    // Multiplex palette address based on active mode
-    assign palette_addr_read = video_mode_active ? palette_addr_graphics : palette_addr_text;
+    // Multiplex palette addresses based on active mode
+    assign palette_addr_read_a = video_mode_active ? palette_addr_graphics : palette_addr_text_fg;
+    assign palette_addr_read_b = video_mode_active ? 4'h0 : palette_addr_text_bg; // Graphics mode uses single color for now
     
     // RGB output signals from renderers
     wire [5:0] text_rgb_out, graphics_rgb_out;
@@ -159,8 +160,10 @@ module vga_card_top (
         .char_we(char_we),
         .font_addr(font_addr),
         .font_data(font_data),
-        .palette_addr(palette_addr_text),
-        .palette_data(palette_data_read),
+        .palette_addr_fg(palette_addr_text_fg),
+        .palette_addr_bg(palette_addr_text_bg),
+        .palette_data_fg(palette_data_read_a),
+        .palette_data_bg(palette_data_read_b),
         .rgb_out(text_rgb_out),
         .pixel_valid(text_pixel_valid),
         .result_char_code(text_result_char_code),
@@ -186,7 +189,7 @@ module vga_card_top (
         .video_data_out(video_data_out),
         .video_we(video_we),
         .palette_addr(palette_addr_graphics),
-        .palette_data(palette_data_read),
+        .palette_data(palette_data_read_a), // Graphics uses single palette port
         .rgb_out(graphics_rgb_out),
         .pixel_valid(graphics_pixel_valid),
         .result_pixel_data(graphics_result_pixel_data)
@@ -225,12 +228,14 @@ module vga_card_top (
         .data(font_data)
     );
     
-    // Color Palette
+    // Color Palette (dual-port read)
     color_palette palette_inst (
         .clk(clk_25mhz),
         .reset_n(reset_n),
-        .read_addr(palette_addr_read),
-        .read_data(palette_data_read),
+        .read_addr_a(palette_addr_read_a),
+        .read_data_a(palette_data_read_a),
+        .read_addr_b(palette_addr_read_b),
+        .read_data_b(palette_data_read_b),
         .write_addr(palette_addr_write),
         .write_data(palette_data_write),
         .write_enable(palette_we)
@@ -242,8 +247,12 @@ module vga_card_top (
     
     // Select RGB output based on current mode
     assign final_rgb = video_mode_active ? graphics_rgb_out : text_rgb_out;
-    
-    // Convert 6-bit RGB to 2-bit per channel for VGA DAC
+
+    wire screen_edge;
+    assign screen_edge = (hcount==0 || hcount ==639 || vcount==0 || vcount==479) ? 1'b1:1'b0;
+   
+    // Convert 6-bit RGB to 2-bit per channel for VGA DAC 
+    // debug code holder((screen_edge)?2'b11:) 
     assign red   = final_rgb[5:4];      // Upper 2 bits of 6-bit RGB
     assign green = final_rgb[3:2];      // Middle 2 bits of 6-bit RGB  
     assign blue  = final_rgb[1:0];      // Lower 2 bits of 6-bit RGB
