@@ -13,6 +13,7 @@ FPGA-based VGA graphics card implementation with text and graphics modes. Curren
   - `TEXT_POSITION (0x01)`: Set cursor position  
   - `TEXT_CLEAR (0x02)`: Clear screen with attributes
   - `GET_TEXT_AT (0x03)`: Read character/attributes at position
+  - `TEXT_COMMAND (0x04)`: Process ASCII control codes for CLI applications
 
 ### Performance Analysis
 **Problem**: 1MHz CPU may be too slow for full screen redraws needed by text editors
@@ -21,19 +22,38 @@ FPGA-based VGA graphics card implementation with text and graphics modes. Curren
 
 **Solution**: Add hardware-accelerated block operations
 
-## Planned Enhancements
+## Implemented Features
 
-### New Text Mode Instructions
-1. **TEXT_WRITE_AT (0x04)**: Write character directly at specified position (no separate positioning)
-2. **TEXT_BLOCK_COPY (0x05)**: Hardware-accelerated rectangle copying
-3. **TEXT_BLOCK_FILL (0x06)**: Fill rectangle with character/attributes
-4. **TEXT_SCROLL_REGION (0x07)**: Scroll only part of screen
+### TEXT_COMMAND (0x04) - ASCII Control Codes
+**Purpose**: Command-line interface support with simplified cursor behavior
+**Implementation**: `src/text_mode_module.v:282-333`
 
-### Benefits
-- **Text editors**: Efficient page up/down using block copy instead of full redraw
-- **Insert/delete lines**: Scroll region operations  
-- **Status bars**: Partial screen updates
-- **Menus**: Block fill for backgrounds
+**Supported Commands**:
+- `$0A` **Backspace**: Move cursor back 1 column and write space (stops at column 0)
+- `$0B` **Tab**: Advance cursor to next 8-column boundary  
+- `$0C` **Line Feed**: Move to column 0 of next row, scroll if at bottom
+- `$0F` **Carriage Return**: Move to column 0 of current row
+- `$7F` **Delete**: Write space at current cursor position
+
+**Design Philosophy**: 
+- CLI-oriented (no text shifting like traditional terminals)
+- Backspace doesn't wrap to previous lines
+- Commands work independently at any cursor position
+- Uses `default_attributes` for consistent formatting
+
+## Future Enhancements
+
+### Potential Text Editor Instructions  
+1. **TEXT_WRITE_AT (0x05)**: Write character directly at specified position
+2. **TEXT_BLOCK_COPY (0x06)**: Hardware-accelerated rectangle copying
+3. **TEXT_BLOCK_FILL (0x07)**: Fill rectangle with character/attributes
+4. **SCROLL_UP (0x08)**: Manual viewport scrolling up
+5. **SCROLL_DOWN (0x09)**: Manual viewport scrolling down
+
+### Benefits for Text Editors
+- **Document editing**: CPU manages document, VGA handles viewport
+- **Efficient redraws**: Block operations instead of character-by-character
+- **Viewport control**: Independent scrolling without document changes
 
 ## Historical Context Research
 
@@ -60,9 +80,18 @@ FPGA-based VGA graphics card implementation with text and graphics modes. Curren
 - Need to balance between terminal-like ease of use and framebuffer-like flexibility
 
 ## Files Modified
-- `src/text_mode_module.v` - Main text mode implementation
-- `tests/tb_text_mode.v` - Test bench
+- `src/text_mode_module.v` - Main text mode implementation with TextCommand support
+- `specification.md` - Updated with TextCommand instruction documentation
+- `.gitignore` - Added impl/ directory exclusion for Gowin FPGA build artifacts
+- `tests/tb_text_mode.v` - Test bench (needs TextCommand test cases)
 - `font_8x16.mem` - 8×16 font ROM data (Code Page 437)
 
+## Current Status
+- **TextCommand (0x04)** implementation complete and ready for hardware testing
+- CLI applications can now use backspace, tab, line feed, carriage return, and delete
+- Command-line editing behavior optimized for interactive shell applications
+
 ## Next Steps
-Implement the new block operation instructions to enable efficient text editor operations while maintaining the current TTY-style interface for simple applications.
+1. Hardware testing of TextCommand functionality
+2. Consider implementing text editor block operations if needed
+3. Develop test applications to validate CLI behavior
