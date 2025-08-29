@@ -31,3 +31,6 @@ test_*
 *.log
 build/
 synth/
+
+# Gowin FPGA implementation files
+impl/

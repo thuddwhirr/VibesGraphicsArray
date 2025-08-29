@@ -52,6 +52,7 @@ module text_mode_module (
     localparam TEXT_POSITION = 8'h01;
     localparam TEXT_CLEAR = 8'h02;
     localparam GET_TEXT_AT = 8'h03;
+    localparam TEXT_COMMAND = 8'h04;
     
     // Text controller state machine states
     localparam IDLE = 4'b0000;
@@ -62,6 +63,7 @@ module text_mode_module (
     localparam GET_TEXT_EXEC = 4'b0101;
     localparam GET_TEXT_READ = 4'b0110;  // New state for memory read timing
     localparam SCROLL_EXEC = 4'b0111;
+    localparam TEXT_COMMAND_EXEC = 4'b1000;
     
     reg [3:0] state;
     
@@ -163,6 +165,10 @@ module text_mode_module (
                             end
                             GET_TEXT_AT: begin
                                 state <= GET_TEXT_EXEC;
+                                instruction_busy <= 1'b1;
+                            end
+                            TEXT_COMMAND: begin
+                                state <= TEXT_COMMAND_EXEC;
                                 instruction_busy <= 1'b1;
                             end
                             default: begin
@@ -271,6 +277,59 @@ module text_mode_module (
                     end else begin
                         clear_col_counter <= clear_col_counter + 1;
                     end
+                end
+                
+                TEXT_COMMAND_EXEC: begin
+                    case (inst_arg0)
+                        8'h0A: begin // Backspace - move back one character and write space
+                            if (cursor_col > 0) begin
+                                cursor_col <= cursor_col - 1;
+                                char_addr_ctrl_internal <= ((cursor_row + scroll_offset) % TOTAL_ROWS) * 7'd80 + (cursor_col - 1);
+                                char_data_out <= {default_attributes, 8'h20}; // Write space character
+                                char_we <= 1'b1;
+                            end
+                            state <= IDLE;
+                            instruction_finished <= 1'b1;
+                        end
+                        8'h0B: begin // Tab - advance cursor 8 increments
+                            if (cursor_col < CHARS_PER_ROW - 8) begin
+                                cursor_col <= (cursor_col + 8) & 7'h78; // Round to next 8-column boundary
+                            end else begin
+                                cursor_col <= CHARS_PER_ROW - 1; // Move to end of line if tab would exceed
+                            end
+                            state <= IDLE;
+                            instruction_finished <= 1'b1;
+                        end
+                        8'h0C: begin // Line feed - move cursor to col 0 of next row
+                            cursor_col <= 7'h00;
+                            if (cursor_row == VISIBLE_ROWS - 1) begin
+                                // Need to scroll
+                                scroll_offset <= (scroll_offset + 1) % TOTAL_ROWS;
+                                state <= SCROLL_EXEC; // Clear the new line
+                            end else begin
+                                cursor_row <= cursor_row + 1;
+                                state <= IDLE;
+                                instruction_finished <= 1'b1;
+                            end
+                        end
+                        8'h0F: begin // Carriage return - move cursor to col 0 of current row
+                            cursor_col <= 7'h00;
+                            state <= IDLE;
+                            instruction_finished <= 1'b1;
+                        end
+                        8'h7F: begin // Delete - set char at current cursor position to space
+                            char_addr_ctrl_internal <= ((cursor_row + scroll_offset) % TOTAL_ROWS) * 7'd80 + cursor_col;
+                            char_data_out <= {default_attributes, 8'h20}; // Write space character
+                            char_we <= 1'b1;
+                            state <= IDLE;
+                            instruction_finished <= 1'b1;
+                        end
+                        default: begin
+                            instruction_error <= 1'b1;
+                            state <= IDLE;
+                            instruction_finished <= 1'b1;
+                        end
+                    endcase
                 end
             endcase
         end
