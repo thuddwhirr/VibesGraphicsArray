@@ -47,6 +47,7 @@ module cpu_interface (
     localparam TEXT_POSITION = 8'h01;
     localparam TEXT_CLEAR = 8'h02;
     localparam GET_TEXT_AT = 8'h03;
+    localparam TEXT_COMMAND = 8'h04;
     localparam WRITE_PIXEL = 8'h10;
     localparam PIXEL_POS = 8'h11;
     localparam WRITE_PIXEL_POS = 8'h12;
@@ -55,10 +56,11 @@ module cpu_interface (
     
     // Valid instruction check
     wire valid_instruction;
-    assign valid_instruction = (registers[1] == TEXT_WRITE) || 
+    assign valid_instruction = (registers[1] == TEXT_WRITE) ||
                               (registers[1] == TEXT_POSITION) ||
                               (registers[1] == TEXT_CLEAR) ||
                               (registers[1] == GET_TEXT_AT) ||
+                              (registers[1] == TEXT_COMMAND) ||
                               (registers[1] == WRITE_PIXEL) ||
                               (registers[1] == PIXEL_POS) ||
                               (registers[1] == WRITE_PIXEL_POS) ||
@@ -70,9 +72,10 @@ module cpu_interface (
     always @(*) begin
         case (registers[1]) // instruction register $0001
             TEXT_WRITE:      execute_addr = 4'h3; // $0003 - execute on character write
-            TEXT_POSITION:   execute_addr = 4'h3; // $0003  
+            TEXT_POSITION:   execute_addr = 4'h3; // $0003
             TEXT_CLEAR:      execute_addr = 4'h2; // $0002
             GET_TEXT_AT:     execute_addr = 4'h3; // $0003
+            TEXT_COMMAND:    execute_addr = 4'h2; // $0002
             WRITE_PIXEL:     execute_addr = 4'h2; // $0002
             PIXEL_POS:       execute_addr = 4'h5; // $0005
             WRITE_PIXEL_POS: execute_addr = 4'h6; // $0006

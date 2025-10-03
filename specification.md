@@ -121,12 +121,12 @@ LDA $000E   ; Get attributes
 ```
 
 #### $04 TextCommand
-**Description**: Process non-glyph ASCII command codes. 
-- `$0A`: backspace. move cursor back one character and set character in the new position to space ($20). 
+**Description**: Process non-glyph ASCII command codes.
+- `$08`: backspace. move cursor back one character and set character in the new position to space ($20).
 
-- `$0B`: tab. advance cursor 8 increments. 
-- `$0C`: line feed. move cursor to col 0 of next row. Scroll if next row is past threshold.
-- `$0F`: carrige return. move cursor to col 0 of current row.
+- `$09`: tab. advance cursor 8 increments.
+- `$0A`: line feed. move cursor to col 0 of next row. Scroll if next row is past threshold.
+- `$0D`: carrige return. move cursor to col 0 of current row.
 - `$7F`: delete. set char at current cursor postion to space ($20). do not advance cursor. 
 
 **Arguments**: 

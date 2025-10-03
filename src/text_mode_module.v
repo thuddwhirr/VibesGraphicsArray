@@ -281,7 +281,7 @@ module text_mode_module (
                 
                 TEXT_COMMAND_EXEC: begin
                     case (inst_arg0)
-                        8'h0A: begin // Backspace - move back one character and write space
+                        8'h08: begin // Backspace - move back one character and write space
                             if (cursor_col > 0) begin
                                 cursor_col <= cursor_col - 1;
                                 char_addr_ctrl_internal <= ((cursor_row + scroll_offset) % TOTAL_ROWS) * 7'd80 + (cursor_col - 1);
@@ -291,7 +291,7 @@ module text_mode_module (
                             state <= IDLE;
                             instruction_finished <= 1'b1;
                         end
-                        8'h0B: begin // Tab - advance cursor 8 increments
+                        8'h09: begin // Tab - advance cursor 8 increments
                             if (cursor_col < CHARS_PER_ROW - 8) begin
                                 cursor_col <= (cursor_col + 8) & 7'h78; // Round to next 8-column boundary
                             end else begin
@@ -300,7 +300,7 @@ module text_mode_module (
                             state <= IDLE;
                             instruction_finished <= 1'b1;
                         end
-                        8'h0C: begin // Line feed - move cursor to col 0 of next row
+                        8'h0A: begin // Line feed - move cursor to col 0 of next row
                             cursor_col <= 7'h00;
                             if (cursor_row == VISIBLE_ROWS - 1) begin
                                 // Need to scroll
@@ -312,7 +312,7 @@ module text_mode_module (
                                 instruction_finished <= 1'b1;
                             end
                         end
-                        8'h0F: begin // Carriage return - move cursor to col 0 of current row
+                        8'h0D: begin // Carriage return - move cursor to col 0 of current row
                             cursor_col <= 7'h00;
                             state <= IDLE;
                             instruction_finished <= 1'b1;
