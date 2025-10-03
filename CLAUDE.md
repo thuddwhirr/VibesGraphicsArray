@@ -29,10 +29,10 @@ FPGA-based VGA graphics card implementation with text and graphics modes. Curren
 **Implementation**: `src/text_mode_module.v:282-333`
 
 **Supported Commands**:
-- `$0A` **Backspace**: Move cursor back 1 column and write space (stops at column 0)
-- `$0B` **Tab**: Advance cursor to next 8-column boundary  
-- `$0C` **Line Feed**: Move to column 0 of next row, scroll if at bottom
-- `$0F` **Carriage Return**: Move to column 0 of current row
+- `$08` **Backspace**: Move cursor back 1 column and write space (stops at column 0)
+- `$09` **Tab**: Advance cursor to next 8-column boundary
+- `$0A` **Line Feed**: Move to column 0 of next row, scroll if at bottom
+- `$0D` **Carriage Return**: Move to column 0 of current row
 - `$7F` **Delete**: Write space at current cursor position
 
 **Design Philosophy**: 
@@ -81,17 +81,22 @@ FPGA-based VGA graphics card implementation with text and graphics modes. Curren
 
 ## Files Modified
 - `src/text_mode_module.v` - Main text mode implementation with TextCommand support
+- `src/cpu_interface.v` - CPU interface with TEXT_COMMAND instruction integration
 - `specification.md` - Updated with TextCommand instruction documentation
 - `.gitignore` - Added impl/ directory exclusion for Gowin FPGA build artifacts
 - `tests/tb_text_mode.v` - Test bench (needs TextCommand test cases)
 - `font_8x16.mem` - 8×16 font ROM data (Code Page 437)
 
 ## Current Status
-- **TextCommand (0x04)** implementation complete and ready for hardware testing
+- **TextCommand (0x04)** implementation complete with corrected ASCII codes
+- Fixed missing cpu_interface.v integration (instruction was not recognized)
 - CLI applications can now use backspace, tab, line feed, carriage return, and delete
 - Command-line editing behavior optimized for interactive shell applications
+- Hardware tested and confirmed working
 
 ## Next Steps
-1. Hardware testing of TextCommand functionality
-2. Consider implementing text editor block operations if needed
-3. Develop test applications to validate CLI behavior
+1. Consider implementing text editor block operations:
+   - TEXT_WRITE_AT for direct positioning writes
+   - TEXT_BLOCK_FILL for efficient region clearing
+   - SCROLL_UP/SCROLL_DOWN for viewport control
+2. Develop test applications to further validate CLI behavior
