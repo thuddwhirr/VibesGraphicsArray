@@ -94,9 +94,52 @@ FPGA-based VGA graphics card implementation with text and graphics modes. Curren
 - Command-line editing behavior optimized for interactive shell applications
 - Hardware tested and confirmed working
 
+## Mode 5: Sprite/Tile Graphics - Design Phase
+
+### Overview
+Designing a sprite-based graphics mode inspired by NES/retro game consoles. See `MODE5_SPRITE_DESIGN.md` for full specification.
+
+### Key Features
+- **Resolution**: 320×240 pixels, 8-bit direct RGB (64 colors)
+- **Tile-based background**: 40×30 grid of 8×8 tiles
+- **Hardware sprites**: 8 sprites per scanline (NES-equivalent)
+- **Memory efficient**: Uses existing 76,800-byte video RAM
+- **Priority control**: Per-tile foreground/background with sprite compositing
+
+### Memory Architecture
+- **256 sprites** × 64 bytes = 16,384 bytes (sprite sheet)
+- **4 tilemap pages** × 1,350 bytes = 5,400 bytes
+  - Sprite index plane: 1,200 bytes per page
+  - Priority bit plane: 150 bytes per page (8 tiles packed per byte)
+- **Sprite attributes**: 256 bytes (64-128 active sprites)
+- **Remaining**: ~55,000 bytes for expansion
+
+### Rendering Pipeline
+**Horizontal Blanking (~160 clocks):**
+- Read 40 tile indices + 5 priority bytes = 45 reads
+- Read 8 sprite rows (64 pixels) = 64 reads
+- Total: 109 reads with 51 clocks spare ✓
+
+**Active Scanline:**
+- Background tiles rendered just-in-time (1 video RAM read per pixel)
+- Sprites composited from line buffers (no video RAM access)
+- Priority: Foreground tiles → Sprites 0-7 → Background tiles
+
+### Interrupt Support
+- **VBLANK interrupt**: Fires at start of vertical blanking (~1,430 CPU cycles @ 1MHz)
+- Mode register bit 5: VBLANK enable
+- Status register bit 3: VBLANK flag (cleared on read)
+- IRQ pin asserted when enabled and flag set
+
+### Design Status
+- Complete architecture specification in MODE5_SPRITE_DESIGN.md
+- Memory layout defined with bit-plane priority storage
+- Timing verified: 109 reads in 160-clock horizontal blanking window
+- Resource estimate: ~800 LUTs, ~800 flip-flops (~12% logic, ~9% registers)
+- Ready for hardware implementation
+
 ## Next Steps
-1. Consider implementing text editor block operations:
-   - TEXT_WRITE_AT for direct positioning writes
-   - TEXT_BLOCK_FILL for efficient region clearing
-   - SCROLL_UP/SCROLL_DOWN for viewport control
-2. Develop test applications to further validate CLI behavior
+1. Implement Mode 5 sprite compositor module
+2. Add sprite instructions to cpu_interface.v
+3. Consider text editor block operations for Mode 0
+4. Develop test applications for CLI and sprite modes
