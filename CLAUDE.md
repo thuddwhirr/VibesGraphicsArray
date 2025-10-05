@@ -94,52 +94,88 @@ FPGA-based VGA graphics card implementation with text and graphics modes. Curren
 - Command-line editing behavior optimized for interactive shell applications
 - Hardware tested and confirmed working
 
-## Mode 5: Sprite/Tile Graphics - Design Phase
+## Mode 5: Sprite/Tile Graphics - Design Complete
 
 ### Overview
-Designing a sprite-based graphics mode inspired by NES/retro game consoles. See `MODE5_SPRITE_DESIGN.md` for full specification.
+NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRITE_DESIGN.md` for complete specification.
 
 ### Key Features
 - **Resolution**: 320×240 pixels, 8-bit direct RGB (64 colors)
-- **Tile-based background**: 40×30 grid of 8×8 tiles
-- **Hardware sprites**: 8 sprites per scanline (NES-equivalent)
-- **Memory efficient**: Uses existing 76,800-byte video RAM
+- **Tile-based background**: 40×30 grid of 8×8 tiles, 4 tilemap pages
+- **Hardware sprites**: 64 total, 8 per scanline (NES-equivalent)
+- **Sprite attributes**: Stored in registers for parallel evaluation
 - **Priority control**: Per-tile foreground/background with sprite compositing
+- **VBLANK interrupt**: Safe update window for smooth 60fps animation
 
-### Memory Architecture
-- **256 sprites** × 64 bytes = 16,384 bytes (sprite sheet)
-- **4 tilemap pages** × 1,350 bytes = 5,400 bytes
+### Memory Architecture (38,168 bytes used / 76,800 total)
+- **2 sprite sheet pages**: 32,768 bytes (`$0000-$7FFF`)
+  - 512 total sprite patterns (256 per page)
+  - Linear storage for simple addressing
+  - Instant page switching
+- **4 tilemap pages**: 5,400 bytes (`$8000-$9517`)
   - Sprite index plane: 1,200 bytes per page
   - Priority bit plane: 150 bytes per page (8 tiles packed per byte)
-- **Sprite attributes**: 256 bytes (64-128 active sprites)
-- **Remaining**: ~55,000 bytes for expansion
+- **64 sprite attributes**: In flip-flops (~2048 FFs)
+  - X/Y position, sprite index, flip H/V, enable
+  - Parallel evaluation (all 64 checked simultaneously)
+  - Can update anytime (not restricted to VBLANK)
+- **Remaining**: 38,632 bytes for future expansion
+
+### Complete Instruction Set
+- **$20 LoadSprite**: Write sprite pixel data (page, index, offset, data)
+- **$21 SetTile**: Set tile with auto priority handling (page, tile index, sprite index, priority)
+- **$22 SetSpriteAttr**: Configure moving sprite (sprite#, X, Y, sprite index, flags)
+- **$23 SetSpritePage**: Switch active sprite sheet page (0-1)
+- **$24 SetTilemapPage**: Switch active tilemap page (0-3)
+- **$25 WriteVRAM**: Raw VRAM write for bulk loading (16-bit address, data)
+- **$26 ReadVRAM**: Raw VRAM read for debugging (16-bit address)
 
 ### Rendering Pipeline
 **Horizontal Blanking (~160 clocks):**
-- Read 40 tile indices + 5 priority bytes = 45 reads
-- Read 8 sprite rows (64 pixels) = 64 reads
-- Total: 109 reads with 51 clocks spare ✓
+- Parallel sprite evaluation: ~10 clocks (64 sprites checked simultaneously)
+- Read 45 tilemap/priority bytes: 45 clocks
+- Read 64 sprite pixels (8 sprites): 64 clocks
+- Total: ~119 clocks, 41 clocks spare ✓
 
 **Active Scanline:**
-- Background tiles rendered just-in-time (1 video RAM read per pixel)
-- Sprites composited from line buffers (no video RAM access)
+- Background tiles rendered just-in-time (1 VRAM read per pixel)
+- Sprites composited from pre-loaded line buffers
 - Priority: Foreground tiles → Sprites 0-7 → Background tiles
 
-### Interrupt Support
-- **VBLANK interrupt**: Fires at start of vertical blanking (~1,430 CPU cycles @ 1MHz)
-- Mode register bit 5: VBLANK enable
-- Status register bit 3: VBLANK flag (cleared on read)
-- IRQ pin asserted when enabled and flag set
+### Resource Estimates
+- **Logic**: ~1000 LUTs (16% of 20K available)
+- **Registers**: ~3000 flip-flops (29% of 15K available)
+- **BSRAM**: 0 additional (uses existing video RAM)
 
-### Design Status
-- Complete architecture specification in MODE5_SPRITE_DESIGN.md
-- Memory layout defined with bit-plane priority storage
-- Timing verified: 109 reads in 160-clock horizontal blanking window
-- Resource estimate: ~800 LUTs, ~800 flip-flops (~12% logic, ~9% registers)
-- Ready for hardware implementation
+### Design Decisions
+- **Linear sprite storage** vs 2D sheet layout (simpler addressing, preprocessor handles conversion)
+- **Sprite attributes in registers** vs BRAM (parallel evaluation, anytime updates)
+- **Single line buffer** vs double-buffered (simpler, 8 sprites sufficient for NES-style games)
+- **Free flip H/V** (combinational logic, no extra clocks)
 
-## Next Steps
-1. Implement Mode 5 sprite compositor module
-2. Add sprite instructions to cpu_interface.v
-3. Consider text editor block operations for Mode 0
-4. Develop test applications for CLI and sprite modes
+### Asset Workflow
+1. Design sprites/tiles in Aseprite/GIMP (visual 2D layout)
+2. Export to .TGA format
+3. Preprocessor converts to:
+   - Linear sprite data
+   - Tilemap sprite indices
+   - Packed priority bit-plane
+4. Bulk load via WriteVRAM instruction
+5. Update sprite positions via SetSpriteAttr (60fps)
+
+## Project Roadmap
+
+### Hardware Development Schedule
+1. **PCB Migration**: Move VGA card from breadboard to PCB
+2. **SD Card Interface (Breadboard)**: 6522 VIA → SPI → SD Card, test filesystem drivers
+3. **SD Card Parallel Interface**: Evaluate parallel design for faster access
+4. **SD Card PCB**: Build production hardware for winning design (SPI vs parallel)
+5. **Mode 5 Implementation**: Implement sprite/tile system (requires filesystem for asset loading)
+6. **Sound System**: FPGA OPL2 (Yamaha) + 1-bit delta-sigma DAC
+
+### Software/Firmware Tasks
+- Filesystem driver development and testing
+- Asset preprocessor tool (TGA → sprite/tilemap data)
+- Mode 5 sprite compositor Verilog implementation
+- Game engine / demo applications
+- Audio synthesis and mixing

@@ -12,12 +12,18 @@ Mode 5 implements a sprite-based graphics system inspired by NES/retro game cons
 ## Memory Architecture
 
 ### Video RAM Layout (76,800 bytes total)
-- **Sprite Sheet**: 256 sprites × 64 bytes = 16,384 bytes
+- **Sprite Sheets**: 2 pages × 16,384 bytes = 32,768 bytes (`$0000-$7FFF`)
+  - Page 0: `$0000-$3FFF` (256 sprites)
+  - Page 1: `$4000-$7FFF` (256 sprites)
   - Each sprite: 8×8 pixels × 8 bits/pixel = 64 bytes
-  - Addressable with 8-bit sprite index (0-255)
-  - 64-color palette using 6-bit RGB (like Mode 4)
+  - Linear addressing: sprite N at offset `N * 64`
+  - 64-color palette using 8-bit direct RGB (RRR GGG BB)
 
-- **Tilemap Pages**: 4 pages × 1,350 bytes = 5,400 bytes
+- **Tilemap Pages**: 4 pages × 1,350 bytes = 5,400 bytes (`$8000-$9517`)
+  - Page 0: `$8000-$8545` (1,350 bytes)
+  - Page 1: `$8546-$8A8B` (1,350 bytes)
+  - Page 2: `$8A8C-$8FD1` (1,350 bytes)
+  - Page 3: `$8FD2-$9517` (1,350 bytes)
   - Each page contains two planes:
     - **Sprite Index Plane**: 40×30 = 1,200 bytes (1 byte per tile)
     - **Priority Bit Plane**: 40×30 bits = 150 bytes (8 tiles per byte, packed)
@@ -25,17 +31,19 @@ Mode 5 implements a sprite-based graphics system inspired by NES/retro game cons
   - Each priority bit: 0=background (behind sprites), 1=foreground (in front of sprites)
   - Instant page switching for screen transitions
 
-- **Sprite Attribute Table**: 256 bytes (128 sprites × 2 bytes minimum)
+- **Sprite Attributes**: Stored in flip-flops (not video RAM)
+  - 64 sprites × 4 bytes = 256 bytes in registers
   - X position (9 bits) - supports 0-511 for smooth scrolling
   - Y position (8 bits) - supports 0-255
   - Sprite index (8 bits) - which sprite pattern to use
-  - Flags (7 bits) - flip X/Y, priority, enable, etc.
+  - Flags (8 bits) - flip X/Y, enable, X bit 8
 
-- **Remaining**: ~55,016 bytes for:
-  - Additional sprite sheet pages (~3 more 256-sprite sets)
+- **Used**: 38,168 bytes (49.7% of VRAM)
+- **Remaining**: 38,632 bytes (`$9518-$FFFF`) for:
+  - Additional sprite sheet pages
   - Additional tilemap pages
-  - Particle effects buffers
-  - Scanline effect tables
+  - Animation frame buffers
+  - Particle effect data
   - Future expansion
 
 ### Tilemap Storage Format
@@ -99,16 +107,18 @@ Byte 3: Flags
 ### Moving Sprite Rendering
 
 **Stage 1: Horizontal Blanking (~160 pixel clocks)**
-1. **Sprite Evaluation**:
-   - Check all enabled sprites against next scanline Y position
-   - Build list of active sprites for this scanline (up to 16-32 sprites)
+1. **Sprite Evaluation** (Parallel - completes in ~10 clocks):
+   - All 64 sprite attribute registers checked simultaneously (combinational logic)
+   - For each sprite: `if (enable && y <= next_scanline && next_scanline < y+8)`
+   - Build prioritized list of up to 8 matching sprites
+   - First 8 matching sprites selected (attribute order = priority)
 
-2. **Sprite Line Buffer Loading**:
+2. **Sprite Line Buffer Loading** (64 reads):
    - For each active sprite, read 8 pixels from video RAM
    - Store in sprite line buffers (8 bytes × 8 sprites = 64 bytes in flip-flops)
    - Calculate sprite data address: `sprite_data[sprite_idx * 64 + (scanline_y - sprite_y) * 8]`
    - 8 sprites × 8 reads = 64 reads
-   - **Target: 8 sprites per scanline maximum**
+   - **Total: ~74 clocks (10 eval + 64 reads) with 86 clocks spare**
 
 **Stage 2: Active Scanline (320 pixel clocks)**
 1. **Parallel Sprite Compositor**:
@@ -130,10 +140,10 @@ Byte 3: Flags
 
 **Performance**:
 - Background: 1 video RAM read per pixel (40 sprite indices + 5 priority bytes + 320 sprite pixels = 365 total reads per scanline)
-- Moving sprites: Pre-loaded during blanking (64 reads for 8 sprites)
-- **Total horizontal blanking: 109 reads (45 tilemap + 64 sprites) with 51 clocks spare**
+- Moving sprites: Parallel evaluation (~10 clocks) + pre-loaded during blanking (64 reads for 8 sprites)
+- **Total horizontal blanking: ~119 clocks (10 eval + 45 tilemap + 64 sprites) with 41 clocks spare**
 - **8 sprites per scanline maximum** (matches NES capability)
-- Total active sprites: 64-128 supported (evaluated each scanline, top 8 displayed)
+- Total active sprites: 64 supported (all evaluated in parallel each scanline, top 8 displayed)
 
 ## Memory Addressing Scheme
 
@@ -154,93 +164,141 @@ Byte 3: Flags
 - Priority byte for tiles at Y, X÷8: `page_base + 1200 + (Y * 5) + (X / 8)`
 - Bit position within byte: `X % 8`
 
-### Sprite Attribute Table
-- Base address: 0x5518 (after sprites + 4 tilemap pages: 0x4000 + 5400)
-- Sprite N attributes: `0x5518 + (N * 4)` (if using 4 bytes per sprite)
+### Sprite Attribute Registers
+- **Implementation**: 64 sprite attribute sets stored in flip-flops (not BRAM)
+- **Size**: 64 sprites × 4 bytes = 256 bytes = ~2048 flip-flops (~13% of available registers)
+- **Access**: CPU writes via SetSpriteAttr instruction, parallel read for evaluation
+- **Benefits**: All 64 sprites can be evaluated simultaneously in combinational logic
 
-## Instruction Set (Proposed)
+## Instruction Set
 
 ### Sprite/Tile Instructions
 
 #### $20 LoadSprite
-**Description**: Write sprite pattern data to sprite sheet.
+**Description**: Write individual sprite pixel data to sprite sheet.
 
 **Arguments**:
-- `$0002`: Sprite index (0-255)
-- `$0003`: Offset within sprite (0-63)
-- `$0004`: Pixel data (8-bit color) - **Execute on update**
+- `$0002`: Sprite sheet page (0-1)
+- `$0003`: Sprite index (0-255)
+- `$0004`: Offset within sprite (0-63)
+- `$0005`: Pixel data (8-bit color) - **Execute on update**
 
-**Usage**: Write sprite data byte-by-byte, or implement block transfer
+**Address calculation**: `page * 16384 + sprite_index * 64 + offset`
+
+**Usage**: Write sprite data byte-by-byte during development/testing
 
 #### $21 SetTile
-**Description**: Set background tilemap entry at X,Y position.
+**Description**: Set background tilemap entry by tile index with automatic priority bit handling.
 
 **Arguments**:
-- `$0002`: Tile X position (0-39)
-- `$0003`: Tile Y position (0-29)
-- `$0004`: Sprite index to use (0-255)
-- `$0005`: Priority bit (0=background, 1=foreground) - **Execute on update**
+- `$0002`: Tilemap page (0-3)
+- `$0003`: Tile index low byte
+- `$0004`: Tile index high byte (0-4, max value 1199)
+- `$0005`: Sprite index to use (0-255)
+- `$0006`: Priority bit (0=background, 1=foreground) - **Execute on update**
 
-**Note**: Updates both sprite index plane and priority bit plane
+**Hardware behavior**:
+- Writes sprite index to: `tilemap_base + tile_index`
+- Calculates priority bit address: `tilemap_base + 1200 + (tile_index / 8)`
+- Updates priority bit at position: `tile_index % 8`
+
+**Note**: Abstracts away priority bit packing - usable for runtime tile editing
 
 #### $22 SetSpriteAttr
-**Description**: Configure moving sprite attributes.
+**Description**: Configure moving sprite attributes (writes to sprite attribute registers).
 
 **Arguments**:
-- `$0002`: Sprite number (0-127)
-- `$0003`: X position
-- `$0004`: Y position
-- `$0005`: Sprite index
-- `$0006`: Flags - **Execute on update**
+- `$0002`: Sprite number (0-63)
+- `$0003`: X position (low 8 bits)
+- `$0004`: Y position (0-255)
+- `$0005`: Sprite index (0-255)
+- `$0006`: Flags byte - **Execute on update**
+  - Bit 0: X position bit 8 (for X = 256-511)
+  - Bit 1: Flip horizontal
+  - Bit 2: Flip vertical
+  - Bit 3: Reserved
+  - Bit 4: Enable sprite
+  - Bits 5-7: Reserved
+
+**Note**: Updates sprite attribute registers directly (not video RAM). Can be updated anytime, not restricted to VBLANK.
 
 #### $23 SetSpritePage
 **Description**: Switch active sprite sheet page.
 
 **Arguments**:
-- `$0002`: Sprite page index (0-3) - **Execute on update**
+- `$0002`: Active sprite sheet page (0-1) - **Execute on update**
+
+**Usage**: Instantly switch between two 256-sprite sets (player/enemies vs effects/UI, etc.)
 
 #### $24 SetTilemapPage
 **Description**: Switch active background tilemap page.
 
 **Arguments**:
-- `$0002`: Tilemap page index (0-3) - **Execute on update**
+- `$0002`: Active tilemap page (0-3) - **Execute on update**
 
-#### $25 LoadSpriteBlock (Optional - Hardware Acceleration)
-**Description**: DMA-style block transfer for sprite loading.
+**Usage**: Instant screen transitions, double-buffered tile updates
+
+#### $25 WriteVRAM
+**Description**: Raw video memory write for bulk loading preprocessed data.
 
 **Arguments**:
-- `$0002`: Sprite index (0-255)
-- `$0003-$000A`: 64 bytes of sprite data
-- **Execute on final byte**
+- `$0002`: Address low byte
+- `$0003`: Address high byte
+- `$0004`: Data byte - **Execute on update**
+
+**Address range**: `$0000-$FFFF` (full 64KB address space, 38,168 bytes used)
+
+**Usage**: Fast bulk loading of sprite sheets and tilemaps from disk
+
+#### $26 ReadVRAM
+**Description**: Raw video memory read for inspection and debugging.
+
+**Arguments**:
+- `$0002`: Address low byte
+- `$0003`: Address high byte - **Execute on update**
+
+**Returns**: Data byte in status/read register
+
+**Usage**: Verify loaded data, debugging, collision detection helpers
 
 ## Hardware Implementation Notes
 
 ### Dual-Port BRAM Usage
-- **Port A**: CPU interface (write sprite data, tilemap, attributes)
+- **Port A**: CPU interface (write sprite data, tilemap)
 - **Port B**: Display rendering (read sprite pixels, tilemap)
 - **Note**: Video RAM BSRAM already at 100% capacity (46/46 blocks used)
+- **Sprite attributes**: Not stored in BRAM - implemented as register file in flip-flops
 
 ### Sprite Compositor Module
 - Parallel to existing graphics_mode_module
 - Shares video timing signals
 - Outputs RGB when Mode 5 active
 - Components:
+  - Sprite attribute register file (64 sprites × 4 bytes in flip-flops)
+  - Parallel sprite evaluator (combinational logic, all 64 sprites checked simultaneously)
   - Tile background renderer (reuse text mode logic)
   - 8 sprite line buffers (8 bytes each, implemented in flip-flops)
   - 8 parallel sprite comparators and pixel selectors
   - Priority compositor (blend sprites with background)
 
 ### Resource Requirements (Estimated)
-- **Logic**: ~800 LUTs (4% of 20K available)
-- **Registers**: ~800 flip-flops (5% of 15K available)
-- **BSRAM**: 0 additional (sprite buffers use distributed RAM)
-- **Total utilization**: ~12% logic, ~9% registers
+- **Logic**: ~1000 LUTs (5% of 20K available)
+  - Sprite evaluation: ~400 LUTs (64 parallel comparators)
+  - Compositor/priority: ~400 LUTs
+  - Control logic: ~200 LUTs
+- **Registers**: ~3000 flip-flops (20% of 15K available)
+  - Sprite attributes: ~2048 FFs (64 sprites × 32 bits)
+  - Sprite line buffers: ~512 FFs (8 sprites × 64 bits)
+  - Control/timing: ~440 FFs
+- **BSRAM**: 0 additional (all sprite data uses existing video RAM)
+- **Total utilization**: ~16% logic, ~29% registers
 
 ### Performance Considerations
 - **Background**: 320 pixels/scanline, just-in-time tile reads (proven in text mode)
 - **Sprites**: 8 sprites/scanline maximum (matches NES capability)
-- **Horizontal blanking budget**: 109 reads with 51 clocks spare
-- **Total sprites**: 64-128 active sprites supported (top 8 per scanline displayed)
+- **Horizontal blanking budget**: ~119 clocks used (10 eval + 45 tilemap + 64 sprites), 41 clocks spare
+- **Sprite evaluation**: Parallel combinational logic - all 64 sprites checked simultaneously
+- **Total sprites**: 64 active sprites supported (all evaluated each scanline, top 8 displayed)
 - **Pixel clock**: 25.175 MHz (same as existing modes)
 
 ## Comparison to Other Systems
@@ -255,7 +313,8 @@ Byte 3: Flags
 - Higher resolution (320×240 vs 256×240)
 - 64 colors per sprite (vs 4 colors)
 - 8 sprites per scanline (matches NES)
-- 64-128 total active sprites (vs 64)
+- 64 total active sprites (matches NES OAM)
+- **Parallel sprite evaluation** (all 64 checked simultaneously vs NES sequential)
 - Per-tile foreground/background priority (NES had limited priority control)
 - Flexible memory allocation
 - 4 instant tilemap page switching
@@ -360,12 +419,14 @@ WaitVBlank:
 - Enough for: 128 sprite updates, tilemap changes, palette updates, page switches
 
 **Typical VBLANK routine:**
-1. Update sprite attribute table (64 sprites × 10 cycles = ~640 cycles)
-2. Update tilemap if needed (~200 cycles for moderate changes)
+1. Update sprite attributes (64 sprites × 10 cycles = ~640 cycles) - writes to registers, not VRAM
+2. Update tilemap if needed (~200 cycles for moderate changes) - VRAM writes
 3. Switch pages if needed (~10 cycles)
 4. Palette updates (~50 cycles)
 5. Exit (~20 cycles overhead)
 6. **Total: ~920 cycles (plenty of headroom)**
+
+**Note**: Sprite attribute updates can actually happen **anytime** (not just VBLANK) since they're stored in registers, not video RAM. VBLANK is only required for tilemap/sprite sheet updates.
 
 ## Sprite Priority System
 
