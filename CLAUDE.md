@@ -131,16 +131,26 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
 - **$26 ReadVRAM**: Raw VRAM read for debugging (16-bit address)
 
 ### Rendering Pipeline
-**Horizontal Blanking (~160 clocks):**
-- Parallel sprite evaluation: ~10 clocks (64 sprites checked simultaneously)
-- Read 45 tilemap/priority bytes: 45 clocks
-- Read 64 sprite pixels (8 sprites): 64 clocks
-- Total: ~119 clocks, 41 clocks spare ✓
+**Display Configuration:**
+- Logical resolution: 320×240 pixels
+- Physical VGA output: 640×480 @ 25.175 MHz
+- Each logical pixel displayed as 2×2 block (pixel doubling horizontal/vertical)
+- Coordinate mapping: `logical = vga >> 1`
 
-**Active Scanline:**
-- Background tiles rendered just-in-time (1 VRAM read per pixel)
+**Horizontal Blanking (~320 VGA clocks):**
+- Sequential sprite evaluation: up to 65 clocks worst case
+  - Clock 0: Parallel match detection (64-bit match vector)
+  - Clocks 1-64: Sequential scan for first 8 matching sprites (early exit when 8 found)
+  - Typical case: 20-30 clocks
+- Read 45 tilemap/priority bytes: 45 clocks (can overlap with sprite eval)
+- Read sprite line buffers (up to 8 sprites × 8 pixels): 64 clocks
+- Total: ~174 clocks worst case, 146 clocks spare ✓
+
+**Active Scanline (640 VGA clocks = 320 logical pixels × 2):**
+- Background tiles rendered just-in-time (1 VRAM read per logical pixel)
 - Sprites composited from pre-loaded line buffers
 - Priority: Foreground tiles → Sprites 0-7 → Background tiles
+- Same pixel output twice horizontally, same scanline rendered twice vertically
 
 ### Resource Estimates
 - **Logic**: ~1000 LUTs (16% of 20K available)
@@ -152,6 +162,8 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
 - **Sprite attributes in registers** vs BRAM (parallel evaluation, anytime updates)
 - **Single line buffer** vs double-buffered (simpler, 8 sprites sufficient for NES-style games)
 - **Free flip H/V** (combinational logic, no extra clocks)
+- **Sequential sprite scan** vs hardware priority encoder (simple, fits timing budget, easy to verify)
+- **2×2 pixel doubling** (320×240 logical → 640×480 VGA, doubles timing budget for hblank operations)
 
 ### Asset Workflow
 1. Design sprites/tiles in Aseprite/GIMP (visual 2D layout)
@@ -162,6 +174,14 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
    - Packed priority bit-plane
 4. Bulk load via WriteVRAM instruction
 5. Update sprite positions via SetSpriteAttr (60fps)
+
+### Future: 256-Color Palette
+- Shared 256×9bit palette for Mode 4 & 5 (always active)
+- ~676 LUTs in distributed RAM (~3.4% of available)
+- New `SET_PALETTE_ENTRY` instruction
+- Requires 9-bit RGB DAC hardware (3-3-3, upgrade from current 2-2-2)
+- Enables palette effects: color cycling, fades, screen flashes
+- Status: Design complete, pending 9-bit DAC hardware
 
 ## Project Roadmap
 

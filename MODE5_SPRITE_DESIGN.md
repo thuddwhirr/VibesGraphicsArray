@@ -4,7 +4,9 @@
 Mode 5 implements a sprite-based graphics system inspired by NES/retro game consoles, using existing video RAM for sprite storage and tilemap-based backgrounds.
 
 ## Display Configuration
-- **Resolution**: 320×240 pixels
+- **Logical Resolution**: 320×240 pixels (Mode 5)
+- **Physical VGA Output**: 640×480 @ 25.175 MHz (each logical pixel displayed as 2×2 block)
+- **Pixel Doubling**: Logical coordinates = VGA coordinates >> 1 (horizontal and vertical)
 - **Color Depth**: 8 bits per pixel (64-color direct RGB, bypassing palette like Mode 4)
 - **Background**: 40×30 tile grid (8×8 pixel tiles)
 - **Moving Sprites**: Hardware sprite compositor with priority/transparency
@@ -78,24 +80,33 @@ Byte 3: Flags
 
 **Critical Constraint**: Only 1 video RAM read per pixel clock (25.175 MHz)
 
+**Pixel Doubling**: Each logical 320×240 pixel is rendered twice horizontally (VGA outputs 640 pixels). Same pixel value output on consecutive clocks.
+
+**Scanline Doubling**: Each logical scanline is rendered twice vertically (VGA outputs 480 lines). Same scanline rendered on consecutive VGA rows.
+
+**Coordinate Mapping**:
+- `logical_x = vga_pixel_x >> 1` (0,0,1,1,2,2,3,3...)
+- `logical_y = vga_scanline_y >> 1` (0,0,1,1,2,2,3,3...)
+
 **Two-Stage Pipeline:**
 
-**Stage 1: Horizontal Blanking (~160 pixel clocks)**
+**Stage 1: Horizontal Blanking (~320 VGA clocks)**
 1. Read 40 sprite indices from video RAM for next scanline's tiles
-   - Address: `tilemap_base + (scanline_y / 8) * 40`
+   - Address: `tilemap_base + (logical_scanline_y / 8) * 40`
    - Store in 40-byte tile index buffer
 2. Read 5 priority bytes (40 bits packed) from video RAM
-   - Address: `tilemap_base + 1200 + (scanline_y / 8) * 5`
+   - Address: `tilemap_base + 1200 + (logical_scanline_y / 8) * 5`
    - Store in 5-byte priority buffer (or unpack to 40-bit flags)
-3. **Total: 45 reads** (fits easily in 160 clocks)
+3. **Total: 45 reads** (fits easily in 320 clocks)
 
-**Stage 2: Active Scanline (320 pixel clocks)**
-1. Calculate which tile: `tile_num = pixel_x / 8` (0-39)
+**Stage 2: Active Scanline (640 VGA clocks = 320 logical pixels × 2)**
+1. Calculate which tile: `tile_num = logical_pixel_x / 8` (0-39)
 2. Read sprite index from buffer: `sprite_idx = tile_buffer[tile_num]`
 3. Read priority flag from buffer: `priority = priority_buffer[tile_num]` or extract from packed byte
-4. Calculate pixel offset within sprite: `offset = (scanline_y % 8) * 8 + (pixel_x % 8)`
+4. Calculate pixel offset within sprite: `offset = (logical_scanline_y % 8) * 8 + (logical_pixel_x % 8)`
 5. **Single video RAM read**: `color = sprite_data[sprite_idx * 64 + offset]`
 6. Pass background color + priority flag to compositor
+7. **Output same pixel value for 2 consecutive VGA clocks** (pixel doubling)
 
 **Key Design Points**:
 - 40-byte tile index buffer uses ~320 flip-flops
@@ -106,24 +117,37 @@ Byte 3: Flags
 
 ### Moving Sprite Rendering
 
-**Stage 1: Horizontal Blanking (~160 pixel clocks)**
-1. **Sprite Evaluation** (Parallel - completes in ~10 clocks):
-   - All 64 sprite attribute registers checked simultaneously (combinational logic)
-   - For each sprite: `if (enable && y <= next_scanline && next_scanline < y+8)`
-   - Build prioritized list of up to 8 matching sprites
-   - First 8 matching sprites selected (attribute order = priority)
+**Stage 1: Horizontal Blanking (~320 VGA clocks)**
+1. **Sprite Evaluation** (Sequential scan - up to 65 clocks worst case):
+   - **Clock 0**: Parallel match detection (combinational logic)
+     - All 64 sprite attribute registers checked simultaneously
+     - For each sprite: `match[i] = enable[i] && (y[i] <= next_scanline) && (next_scanline < y[i] + 8)`
+     - Result: 64-bit match vector
+   - **Clocks 1-64**: Sequential priority scan
+     - Initialize: `sprite_count = 0`, `scan_index = 0`
+     - For each iteration while `scan_index < 64` and `sprite_count < 8`:
+       - If `match[scan_index]`: record `active_sprite[sprite_count] = scan_index`, increment `sprite_count`
+       - Always increment `scan_index`
+     - Early exit when `sprite_count == 8` (all slots filled)
+   - **Performance**: Best case 8 clocks, typical 20-30 clocks, worst case 64 clocks
+   - **Result**: `active_sprite[0..sprite_count-1]` contains sprite indices in priority order
 
-2. **Sprite Line Buffer Loading** (64 reads):
-   - For each active sprite, read 8 pixels from video RAM
+2. **Tilemap/Priority Buffer Loading** (45 reads):
+   - Read 40 sprite indices for next scanline's tiles
+   - Read 5 priority bytes (40 bits packed)
+   - Can execute in parallel with sprite evaluation (uses VRAM, not registers)
+
+3. **Sprite Line Buffer Loading** (64 reads):
+   - For each active sprite (0 to `sprite_count-1`), read 8 pixels from video RAM
    - Store in sprite line buffers (8 bytes × 8 sprites = 64 bytes in flip-flops)
-   - Calculate sprite data address: `sprite_data[sprite_idx * 64 + (scanline_y - sprite_y) * 8]`
-   - 8 sprites × 8 reads = 64 reads
-   - **Total: ~74 clocks (10 eval + 64 reads) with 86 clocks spare**
+   - Calculate sprite data address: `sprite_data[sprite_idx * 64 + (logical_scanline_y - sprite_y) * 8]`
+   - If `sprite_count < 8`, fewer reads needed
+   - **Total: ~174 clocks worst case (65 eval + 45 tilemap + 64 sprites) with 146 clocks spare**
 
-**Stage 2: Active Scanline (320 pixel clocks)**
+**Stage 2: Active Scanline (640 VGA clocks = 320 logical pixels × 2)**
 1. **Parallel Sprite Compositor**:
    - Background pixel from tile pipeline (from video RAM)
-   - For each active sprite (0-7), check if X position overlaps current pixel
+   - For each active sprite (0-7), check if X position overlaps current logical pixel
    - Read sprite pixel from line buffer (no video RAM access - parallel registers)
    - Check transparency (color 0 = transparent)
    - Apply fixed priority scheme (sprite 0 = highest priority)
@@ -137,13 +161,16 @@ Byte 3: Flags
 3. **Final Output**:
    - Selected sprite color (if any sprite matched)
    - OR background color (if all sprites transparent)
+   - **Output same pixel value for 2 consecutive VGA clocks** (pixel doubling)
 
 **Performance**:
-- Background: 1 video RAM read per pixel (40 sprite indices + 5 priority bytes + 320 sprite pixels = 365 total reads per scanline)
-- Moving sprites: Parallel evaluation (~10 clocks) + pre-loaded during blanking (64 reads for 8 sprites)
-- **Total horizontal blanking: ~119 clocks (10 eval + 45 tilemap + 64 sprites) with 41 clocks spare**
+- Background: 1 video RAM read per logical pixel (45 tilemap/priority bytes + 320 sprite pixels per logical scanline, rendered twice for VGA output)
+- Moving sprites: Sequential evaluation (65 clocks worst case) + pre-loaded during blanking (64 reads for up to 8 sprites)
+- **Total horizontal blanking usage: ~174 clocks worst case out of ~320 available (146 clocks spare)**
 - **8 sprites per scanline maximum** (matches NES capability)
-- Total active sprites: 64 supported (all evaluated in parallel each scanline, top 8 displayed)
+- Total active sprites: 64 supported (all evaluated each logical scanline via sequential scan, top 8 displayed)
+- **Note**: Same scanline rendered twice vertically (no additional work for even VGA scanlines)
+- **Optimization**: Tilemap reads can overlap with sprite evaluation (parallel operations on different resources)
 
 ## Memory Addressing Scheme
 
@@ -294,12 +321,18 @@ Byte 3: Flags
 - **Total utilization**: ~16% logic, ~29% registers
 
 ### Performance Considerations
-- **Background**: 320 pixels/scanline, just-in-time tile reads (proven in text mode)
-- **Sprites**: 8 sprites/scanline maximum (matches NES capability)
-- **Horizontal blanking budget**: ~119 clocks used (10 eval + 45 tilemap + 64 sprites), 41 clocks spare
-- **Sprite evaluation**: Parallel combinational logic - all 64 sprites checked simultaneously
-- **Total sprites**: 64 active sprites supported (all evaluated each scanline, top 8 displayed)
-- **Pixel clock**: 25.175 MHz (same as existing modes)
+- **Logical resolution**: 320×240 pixels (rendered as 640×480 VGA output via 2×2 pixel doubling)
+- **Background**: 320 logical pixels/scanline, just-in-time tile reads (proven in text mode)
+- **Sprites**: 8 sprites per logical scanline maximum (matches NES capability)
+- **Horizontal blanking budget**: ~174 clocks used worst case (65 eval + 45 tilemap + 64 sprites), **146 clocks spare**
+- **Sprite evaluation**: Sequential scan algorithm
+  - Parallel match detection (1 clock) generates 64-bit match vector
+  - Sequential priority scan (up to 64 clocks) finds first 8 matching sprites
+  - Early exit optimization when 8 sprites found
+  - Typical case: 20-30 clocks total
+- **Total sprites**: 64 active sprites supported (all evaluated each logical scanline, top 8 displayed)
+- **Pixel clock**: 25.175 MHz (VGA standard)
+- **Rendering efficiency**: Each logical scanline rendered twice vertically with no additional computation
 
 ## Comparison to Other Systems
 
@@ -321,12 +354,46 @@ Byte 3: Flags
 
 ## Future Enhancements
 
-### Potential Additions
+### 256-Color Palette (Planned)
+
+**Overview**: Shared 256×9bit palette for Mode 4 and Mode 5, always active (no bypass mode).
+
+**Hardware Requirements**:
+- **Storage**: 256 entries × 9 bits = 2,304 bits in distributed RAM (LUT-based)
+- **Resource cost**: ~676 LUTs (~3.4% of 20K available) ✓
+- **Implementation**: Dual-port LUT RAM (CPU write port, display read port)
+- **Color format**: 9-bit RGB (RRR GGG BBB, 512 colors available)
+
+**Display Pipeline**:
+- Mode 4: 8-bit pixel from VRAM → palette lookup → 9-bit RGB output
+- Mode 5: 8-bit color from sprite/tile compositor → palette lookup → 9-bit RGB output
+- Same palette shared between both modes
+
+**CPU Interface**:
+- **New instruction**: `SET_PALETTE_ENTRY` (e.g., opcode `$27`)
+- **Arguments**:
+  - `$0002`: Palette index (0-255)
+  - `$0003`: RGB value low byte (bits 0-7: GGG BBB RR)
+  - `$0004`: RGB value high byte (bit 0: R) - **Execute on update**
+- **Usage**: Load custom palettes for images, palette animation effects
+
+**Benefits**:
+- Mode 4: True 256-color images with artist-defined palettes
+- Mode 5: 256 unique colors for sprites/tiles (vs current 64-color direct RGB)
+- Palette effects: color cycling, fade to black/white, screen flashes, palette rotation
+- Simpler hardware: shared palette for both modes
+
+**Hardware Dependencies**:
+- Requires 9-bit RGB DAC hardware (3 bits per color channel via R-2R networks)
+- Current 6-bit RGB (2-2-2) hardware must be upgraded first
+
+**Status**: Design complete, pending 9-bit color hardware implementation.
+
+### Other Potential Additions
 1. **Hardware scrolling**: X/Y offset registers for tilemap
 2. **Sprite scaling**: 2×2 tile sprites (16×16 pixels)
-3. **Palette mode**: Use 4-bit pixels with 16-color palette for more sprites
-4. **Scanline effects**: Per-line X scroll for parallax
-5. **Collision detection**: Hardware sprite-to-sprite collision flags
+3. **Scanline effects**: Per-line X scroll for parallax
+4. **Collision detection**: Hardware sprite-to-sprite collision flags
 
 ### SDRAM Integration (Future)
 If SDRAM controller is integrated:
