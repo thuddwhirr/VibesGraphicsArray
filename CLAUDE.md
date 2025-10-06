@@ -182,7 +182,8 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
 - Requires 12-bit RGB DAC hardware (4-4-4, upgrade from current 2-2-2)
 - 4096 colors available, smoother gradients and better color fidelity
 - Enables palette effects: color cycling, fades, screen flashes
-- Status: Design complete, pending 12-bit DAC hardware
+- Binary-weighted resistor DAC values calculated (0.7V into 75Ω VGA, ±2.5% error)
+- Status: Design complete with resistor values, pending hardware build
 
 ## Project Roadmap
 

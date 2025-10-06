@@ -385,8 +385,29 @@ Byte 3: Flags
 - Simpler hardware: shared palette for both modes
 
 **Hardware Dependencies**:
-- Requires 12-bit RGB DAC hardware (4 bits per color channel via R-2R networks)
+- Requires 12-bit RGB DAC hardware (4 bits per color channel)
 - Current 6-bit RGB (2-2-2) hardware must be upgraded first
+
+**DAC Resistor Values (Binary-Weighted, 0.7V max into 75Ω VGA termination):**
+
+| Bit | Binary | Target Voltage | Calculated R | Practical Resistors | Error  |
+|-----|--------|----------------|--------------|---------------------|--------|
+| 0   | 0001   | 0.0467V        | 5224.8Ω      | 4.7kΩ + 560Ω (5.26kΩ) | -0.5% |
+| 1   | 0010   | 0.0933V        | 2577.7Ω      | 2.2kΩ + 330Ω (2.53kΩ) | +2.0% |
+| 2   | 0100   | 0.1867V        | 1250.7Ω      | 1.0kΩ + 220Ω (1.22kΩ) | +2.5% |
+| 3   | 1000   | 0.3733V        | 588.0Ω       | 560Ω + 22Ω (582Ω)     | -1.0% |
+
+**Per Color Channel (R, G, or B):**
+- Bit 0 (LSB): 4.7kΩ + 560Ω series (or 5.1kΩ single resistor)
+- Bit 1: 2.2kΩ + 330Ω series (= 2.53kΩ)
+- Bit 2: 1.0kΩ + 220Ω series (= 1.22kΩ)
+- Bit 3 (MSB): 560Ω + 22Ω series (= 582Ω)
+
+**Full RGB Implementation:**
+- 3 color channels × 4 bits = 12 resistor networks
+- Maximum output: 0.7V (1111 binary = all bits HIGH)
+- All errors < ±2.5%, excellent linearity
+- Total: 24 resistors (using series combinations) or 12 resistors (if exact values available)
 
 **Status**: Design complete, pending 12-bit color hardware implementation.
 
