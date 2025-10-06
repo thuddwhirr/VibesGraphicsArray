@@ -176,12 +176,13 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
 5. Update sprite positions via SetSpriteAttr (60fps)
 
 ### Future: 256-Color Palette
-- Shared 256×9bit palette for Mode 4 & 5 (always active)
-- ~676 LUTs in distributed RAM (~3.4% of available)
+- Shared 256×12bit palette for Mode 4 & 5 (always active)
+- ~900 LUTs in distributed RAM (~4.5% of available)
 - New `SET_PALETTE_ENTRY` instruction
-- Requires 9-bit RGB DAC hardware (3-3-3, upgrade from current 2-2-2)
+- Requires 12-bit RGB DAC hardware (4-4-4, upgrade from current 2-2-2)
+- 4096 colors available, smoother gradients and better color fidelity
 - Enables palette effects: color cycling, fades, screen flashes
-- Status: Design complete, pending 9-bit DAC hardware
+- Status: Design complete, pending 12-bit DAC hardware
 
 ## Project Roadmap
 

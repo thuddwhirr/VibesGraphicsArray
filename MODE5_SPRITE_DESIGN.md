@@ -356,38 +356,39 @@ Byte 3: Flags
 
 ### 256-Color Palette (Planned)
 
-**Overview**: Shared 256×9bit palette for Mode 4 and Mode 5, always active (no bypass mode).
+**Overview**: Shared 256×12bit palette for Mode 4 and Mode 5, always active (no bypass mode).
 
 **Hardware Requirements**:
-- **Storage**: 256 entries × 9 bits = 2,304 bits in distributed RAM (LUT-based)
-- **Resource cost**: ~676 LUTs (~3.4% of 20K available) ✓
+- **Storage**: 256 entries × 12 bits = 3,072 bits in distributed RAM (LUT-based)
+- **Resource cost**: ~900 LUTs (~4.5% of 20K available) ✓
 - **Implementation**: Dual-port LUT RAM (CPU write port, display read port)
-- **Color format**: 9-bit RGB (RRR GGG BBB, 512 colors available)
+- **Color format**: 12-bit RGB (RRRR GGGG BBBB, 4096 colors available)
 
 **Display Pipeline**:
-- Mode 4: 8-bit pixel from VRAM → palette lookup → 9-bit RGB output
-- Mode 5: 8-bit color from sprite/tile compositor → palette lookup → 9-bit RGB output
+- Mode 4: 8-bit pixel from VRAM → palette lookup → 12-bit RGB output
+- Mode 5: 8-bit color from sprite/tile compositor → palette lookup → 12-bit RGB output
 - Same palette shared between both modes
 
 **CPU Interface**:
 - **New instruction**: `SET_PALETTE_ENTRY` (e.g., opcode `$27`)
 - **Arguments**:
   - `$0002`: Palette index (0-255)
-  - `$0003`: RGB value low byte (bits 0-7: GGG BBB RR)
-  - `$0004`: RGB value high byte (bit 0: R) - **Execute on update**
+  - `$0003`: RGB value low byte (bits 0-7: GGGG BBBB)
+  - `$0004`: RGB value high byte (bits 0-3: RRRR) - **Execute on update**
 - **Usage**: Load custom palettes for images, palette animation effects
 
 **Benefits**:
 - Mode 4: True 256-color images with artist-defined palettes
 - Mode 5: 256 unique colors for sprites/tiles (vs current 64-color direct RGB)
+- 4096 color palette (vs 64 direct RGB colors) - smoother gradients and better color fidelity
 - Palette effects: color cycling, fade to black/white, screen flashes, palette rotation
 - Simpler hardware: shared palette for both modes
 
 **Hardware Dependencies**:
-- Requires 9-bit RGB DAC hardware (3 bits per color channel via R-2R networks)
+- Requires 12-bit RGB DAC hardware (4 bits per color channel via R-2R networks)
 - Current 6-bit RGB (2-2-2) hardware must be upgraded first
 
-**Status**: Design complete, pending 9-bit color hardware implementation.
+**Status**: Design complete, pending 12-bit color hardware implementation.
 
 ### Other Potential Additions
 1. **Hardware scrolling**: X/Y offset registers for tilemap
