@@ -22,7 +22,15 @@ module cpu_interface (
     input wire [7:0] result_1,          // Output register $000E
     
     // Mode Control
-    output reg [7:0] mode_control       // Register $0000 - video mode selection
+    output reg [7:0] mode_control,      // Register $0000 - video mode selection
+
+    // Writable Palette Interface
+    output wire [7:0] palette_write_addr,    // Palette write address
+    output wire [11:0] palette_write_data,   // Palette write data (12-bit RGB)
+    output wire palette_write_enable,        // Palette write enable pulse
+    input wire [11:0] palette_read_data,     // Palette read data (for GET_PALETTE_ENTRY)
+    output wire [7:0] palette_result_low,    // GET_PALETTE_ENTRY result low byte
+    output wire [7:0] palette_result_high    // GET_PALETTE_ENTRY result high byte
 );
 
     // Internal registers
@@ -53,6 +61,8 @@ module cpu_interface (
     localparam WRITE_PIXEL_POS = 8'h12;
     localparam CLEAR_SCREEN = 8'h13;
     localparam GET_PIXEL_AT = 8'h14;
+    localparam SET_PALETTE_ENTRY = 8'h20;
+    localparam GET_PALETTE_ENTRY = 8'h21;
     
     // Valid instruction check
     wire valid_instruction;
@@ -65,23 +75,27 @@ module cpu_interface (
                               (registers[1] == PIXEL_POS) ||
                               (registers[1] == WRITE_PIXEL_POS) ||
                               (registers[1] == CLEAR_SCREEN) ||
-                              (registers[1] == GET_PIXEL_AT);
+                              (registers[1] == GET_PIXEL_AT) ||
+                              (registers[1] == SET_PALETTE_ENTRY) ||
+                              (registers[1] == GET_PALETTE_ENTRY);
     
     // Execute trigger register addresses
     reg [3:0] execute_addr;
     always @(*) begin
         case (registers[1]) // instruction register $0001
-            TEXT_WRITE:      execute_addr = 4'h3; // $0003 - execute on character write
-            TEXT_POSITION:   execute_addr = 4'h3; // $0003
-            TEXT_CLEAR:      execute_addr = 4'h2; // $0002
-            GET_TEXT_AT:     execute_addr = 4'h3; // $0003
-            TEXT_COMMAND:    execute_addr = 4'h2; // $0002
-            WRITE_PIXEL:     execute_addr = 4'h2; // $0002
-            PIXEL_POS:       execute_addr = 4'h5; // $0005
-            WRITE_PIXEL_POS: execute_addr = 4'h6; // $0006
-            CLEAR_SCREEN:    execute_addr = 4'h2; // $0002
-            GET_PIXEL_AT:    execute_addr = 4'h5; // $0005
-            default:         execute_addr = 4'hF; // Invalid
+            TEXT_WRITE:        execute_addr = 4'h3; // $0003 - execute on character write
+            TEXT_POSITION:     execute_addr = 4'h3; // $0003
+            TEXT_CLEAR:        execute_addr = 4'h2; // $0002
+            GET_TEXT_AT:       execute_addr = 4'h3; // $0003
+            TEXT_COMMAND:      execute_addr = 4'h2; // $0002
+            WRITE_PIXEL:       execute_addr = 4'h2; // $0002
+            PIXEL_POS:         execute_addr = 4'h5; // $0005
+            WRITE_PIXEL_POS:   execute_addr = 4'h6; // $0006
+            CLEAR_SCREEN:      execute_addr = 4'h2; // $0002
+            GET_PIXEL_AT:      execute_addr = 4'h5; // $0005
+            SET_PALETTE_ENTRY: execute_addr = 4'h4; // $0004 - RGB high byte
+            GET_PALETTE_ENTRY: execute_addr = 4'h2; // $0002 - palette index
+            default:           execute_addr = 4'hF; // Invalid
         endcase
     end
     
@@ -212,5 +226,60 @@ module cpu_interface (
             end
         end
     end
+
+    //========================================
+    // PALETTE INSTRUCTION HANDLING
+    //========================================
+
+    // Palette instructions are handled directly (not routed to text/graphics modules)
+    wire palette_instruction_active;
+    assign palette_instruction_active = (instruction == SET_PALETTE_ENTRY) ||
+                                       (instruction == GET_PALETTE_ENTRY);
+
+    // SET_PALETTE_ENTRY: Write palette entry
+    // $0002: Palette index (0-255)
+    // $0003: RGB low byte (GGGG BBBB)
+    // $0004: RGB high byte (xxxx RRRR) - execute on write
+    assign palette_write_addr = arg_data[0];  // $0002
+    assign palette_write_data = {arg_data[2][3:0], arg_data[1][7:4], arg_data[1][3:0]};  // {RRRR, GGGG, BBBB}
+
+    // Generate write pulse on execute trigger for SET_PALETTE_ENTRY
+    reg palette_write_trigger;
+    always @(posedge phi2 or negedge reset_n) begin
+        if (!reset_n) begin
+            palette_write_trigger <= 1'b0;
+        end else begin
+            // Pulse when writing to execute register for SET_PALETTE_ENTRY
+            if (chip_enable && !rw && (addr == execute_addr) &&
+                (registers[1] == SET_PALETTE_ENTRY)) begin
+                palette_write_trigger <= 1'b1;
+            end else begin
+                palette_write_trigger <= 1'b0;
+            end
+        end
+    end
+    assign palette_write_enable = palette_write_trigger;
+
+    // GET_PALETTE_ENTRY: Read palette entry and store results
+    // $0002: Palette index (0-255) - execute on write
+    // Result returned in $000D (RGB low byte: GGGG BBBB), $000E (RGB high byte: RRRR xxxx)
+    reg [7:0] palette_result_low_reg, palette_result_high_reg;
+
+    always @(posedge phi2 or negedge reset_n) begin
+        if (!reset_n) begin
+            palette_result_low_reg <= 8'h00;
+            palette_result_high_reg <= 8'h00;
+        end else begin
+            // Latch palette read data when executing GET_PALETTE_ENTRY
+            if (chip_enable && !rw && (addr == execute_addr) &&
+                (registers[1] == GET_PALETTE_ENTRY)) begin
+                palette_result_low_reg <= palette_read_data[7:0];   // GGGG BBBB
+                palette_result_high_reg <= {palette_read_data[11:8], 4'h0};  // RRRR 0000
+            end
+        end
+    end
+
+    assign palette_result_low = palette_result_low_reg;
+    assign palette_result_high = palette_result_high_reg;
 
 endmodule

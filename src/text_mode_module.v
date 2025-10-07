@@ -28,11 +28,11 @@ module text_mode_module (
     // Palette interface - dual port
     output reg [3:0] palette_addr_fg,  // Foreground palette address
     output reg [3:0] palette_addr_bg,  // Background palette address
-    input wire [5:0] palette_data_fg,  // Foreground RGB output
-    input wire [5:0] palette_data_bg,  // Background RGB output
-    
+    input wire [11:0] palette_data_fg,  // Foreground RGB output (12-bit)
+    input wire [11:0] palette_data_bg,  // Background RGB output (12-bit)
+
     // RGB output
-    output reg [5:0] rgb_out,       // 6-bit RGB to external DAC
+    output reg [11:0] rgb_out,      // 12-bit RGB to external DAC
     output reg pixel_valid,         // High when rgb_out is valid
     
     // Result outputs for GetTextAt instruction
@@ -354,8 +354,8 @@ module text_mode_module (
     wire [7:0] character_code;      //character code returned from currrent returned charecter
     wire [7:0] font_row;            //font row for the character_code and the current pixel_y; 
 
-    wire [5:0] foreground_rgb;      //rgb data returned for the foreground index; 
-    wire [5:0] background_rgb;      //rgb data returned for the background index
+    wire [11:0] foreground_rgb;     //rgb data returned for the foreground index (12-bit)
+    wire [11:0] background_rgb;     //rgb data returned for the background index (12-bit)
     
     // Blink support
     reg [24:0] blink_counter;

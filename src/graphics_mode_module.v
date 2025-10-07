@@ -28,12 +28,16 @@ module graphics_mode_module (
     output wire [16:0] display_video_addr,
     input wire [7:0] display_video_data,  // Display data from port B
     
-    // Palette interface
+    // Fixed palette interface (16-color modes)
     output reg [3:0] palette_addr,       // Palette address (4-bit color index)
-    input wire [5:0] palette_data,       // 6-bit RGB color output
-    
+    input wire [11:0] palette_data,      // 12-bit RGB color output
+
+    // Writable palette interface (256-color Mode 4)
+    output wire [7:0] writable_palette_addr,   // Palette address (8-bit color index)
+    input wire [11:0] writable_palette_data,   // 12-bit RGB color output
+
     // RGB output
-    output reg [5:0] rgb_out,            // 6-bit RGB to external DAC
+    output reg [11:0] rgb_out,           // 12-bit RGB to external DAC
     output reg pixel_valid,              // High when rgb_out is valid
     
     // Result output for GetPixelAt instruction
@@ -534,27 +538,30 @@ module graphics_mode_module (
         endcase
     end
     
+    // Writable palette address is combinational (async lookup)
+    assign writable_palette_addr = display_pixel_value[7:0];
+
     // Generate final RGB output
     always @(posedge video_clk or negedge reset_n) begin
         if (!reset_n) begin
-            rgb_out <= 6'h00;
+            rgb_out <= 12'h000;
             pixel_valid <= 1'b0;
             palette_addr <= 4'h0;
         end else begin
             pixel_valid <= display_active;
-            
+
             if (display_active && display_in_bounds_reg) begin
                 if (current_mode == MODE_320x240x64) begin
-                    // Direct 6-bit color output
-                    rgb_out <= display_pixel_value[5:0];
+                    // Mode 4: 256-color palette lookup (combinational - zero latency)
+                    rgb_out <= writable_palette_data;
                 end else begin
-                    // Palette lookup - register palette address, use previous cycle's data
+                    // Other modes: 16-color palette lookup
                     palette_addr <= display_pixel_value[3:0];
-                    rgb_out <= palette_data; // Uses palette data from previous address
+                    rgb_out <= palette_data;
                 end
             end else begin
                 // Outside display area - output black
-                rgb_out <= 6'h00;
+                rgb_out <= 12'h000;
             end
         end
     end

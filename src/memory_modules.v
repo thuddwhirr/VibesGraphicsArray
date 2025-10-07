@@ -114,55 +114,95 @@ module font_rom (
 endmodule
 
 //========================================
-// COLOR PALETTE - 16 x 6-bit RGB
+// COLOR PALETTE - 16 x 12-bit RGB
 // 16 color palette for indexed color modes
 //========================================
 module color_palette (
     input wire clk,             // Clock
     input wire reset_n,         // Active low reset
-    
+
     // Dual read interface
     input wire [3:0] read_addr_a, // Read address A (0-15) - foreground
-    output reg [5:0] read_data_a, // 6-bit RGB output A
+    output reg [11:0] read_data_a, // 12-bit RGB output A
     input wire [3:0] read_addr_b, // Read address B (0-15) - background
-    output reg [5:0] read_data_b, // 6-bit RGB output B
-    
-    // Write interface (for palette updates)
+    output reg [11:0] read_data_b, // 12-bit RGB output B
+
+    // Write interface (for palette updates - currently unused)
     input wire [3:0] write_addr,// Write address (0-15)
-    input wire [5:0] write_data,// 6-bit RGB input
+    input wire [11:0] write_data,// 12-bit RGB input
     input wire write_enable     // Write enable
 );
 
-    // Palette memory array
-    reg [5:0] palette_mem [0:15];
-    
-    // Initialize with default 16-color palette
+    // Palette memory array - 12-bit RGB (RRRR GGGG BBBB)
+    reg [11:0] palette_mem [0:15];
+
+    // Initialize with default 16-color palette (CGA/EGA colors in 12-bit)
     initial begin
-        palette_mem[0]  = 6'b000000; // Black
-        palette_mem[1]  = 6'b111111; // White
-        palette_mem[2]  = 6'b001100; // Bright Green
-        palette_mem[3]  = 6'b000100; // Dark Green
-        palette_mem[4]  = 6'b110000; // Red
-        palette_mem[5]  = 6'b000011; // Blue
-        palette_mem[6]  = 6'b111100; // Yellow
-        palette_mem[7]  = 6'b110011; // Magenta
-        palette_mem[8]  = 6'b001111; // Cyan
-        palette_mem[9]  = 6'b100000; // Dark Red
-        palette_mem[10] = 6'b000001; // Dark Blue
-        palette_mem[11] = 6'b100100; // Brown
-        palette_mem[12] = 6'b101010; // Gray
-        palette_mem[13] = 6'b010101; // Dark Gray
-        palette_mem[14] = 6'b111010; // Light Green
-        palette_mem[15] = 6'b101111; // Light Blue
+        palette_mem[0]  = 12'h000; // Black
+        palette_mem[1]  = 12'hFFF; // White
+        palette_mem[2]  = 12'h0F0; // Bright Green
+        palette_mem[3]  = 12'h080; // Dark Green
+        palette_mem[4]  = 12'hF00; // Red
+        palette_mem[5]  = 12'h00F; // Blue
+        palette_mem[6]  = 12'hFF0; // Yellow
+        palette_mem[7]  = 12'hF0F; // Magenta
+        palette_mem[8]  = 12'h0FF; // Cyan
+        palette_mem[9]  = 12'h800; // Dark Red
+        palette_mem[10] = 12'h008; // Dark Blue
+        palette_mem[11] = 12'h880; // Brown
+        palette_mem[12] = 12'hAAA; // Gray
+        palette_mem[13] = 12'h555; // Dark Gray
+        palette_mem[14] = 12'hCCC; // Light Gray
+        palette_mem[15] = 12'h08F; // Light Blue
     end
-    
+
     // Dual read operations
     always @(posedge clk) begin
         read_data_a <= palette_mem[read_addr_a];
         read_data_b <= palette_mem[read_addr_b];
     end
-    
-    // Write operation
+
+    // Write operation (currently unused - for future expansion)
+    always @(posedge clk) begin
+        if (write_enable) begin
+            palette_mem[write_addr] <= write_data;
+        end
+    end
+
+endmodule
+
+//========================================
+// WRITABLE PALETTE - 256 x 12-bit RGB
+// 256 color writable palette for Mode 4 graphics
+// Asynchronous read (combinational), synchronous write
+//========================================
+module writable_palette (
+    input wire clk,                  // Clock for writes only
+    input wire reset_n,              // Active low reset
+
+    // Display read interface (asynchronous/combinational)
+    input wire [7:0] read_addr,      // Read address (0-255)
+    output wire [11:0] read_data,    // 12-bit RGB output (combinational)
+
+    // CPU write interface (synchronous)
+    input wire [7:0] write_addr,     // Write address (0-255)
+    input wire [11:0] write_data,    // 12-bit RGB input
+    input wire write_enable          // Write enable
+);
+
+    // Palette memory array - 12-bit RGB (RRRR GGGG BBBB)
+    // Implemented in distributed RAM (LUTs) for async read
+    reg [11:0] palette_mem [0:255];
+
+    // Load default VGA palette from file
+    initial begin
+        $readmemh("default_palette.mem", palette_mem);
+    end
+
+    // Asynchronous/combinational read (zero cycle latency)
+    assign read_data = palette_mem[read_addr];
+
+    // Synchronous write operation
     always @(posedge clk) begin
         if (write_enable) begin
             palette_mem[write_addr] <= write_data;

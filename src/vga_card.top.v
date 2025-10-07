@@ -14,9 +14,9 @@ module vga_card_top (
     // VGA Output Signals
     output wire hsync,          // Horizontal sync
     output wire vsync,          // Vertical sync
-    output wire [1:0] red,      // 2-bit red output
-    output wire [1:0] green,    // 2-bit green output
-    output wire [1:0] blue      // 2-bit blue output
+    output wire [3:0] red,      // 4-bit red output (12-bit color)
+    output wire [3:0] green,    // 4-bit green output (12-bit color)
+    output wire [3:0] blue      // 4-bit blue output (12-bit color)
 );
 
     //========================================
@@ -72,27 +72,36 @@ module vga_card_top (
     wire [11:0] font_addr;
     wire [7:0] font_data;
     
-    // Palette interface signals
+    // Fixed palette interface signals (16-color)
     wire [3:0] palette_addr_text_fg, palette_addr_text_bg, palette_addr_graphics;
     wire [3:0] palette_addr_read_a, palette_addr_read_b;
-    wire [5:0] palette_data_read_a, palette_data_read_b;
+    wire [11:0] palette_data_read_a, palette_data_read_b;  // 12-bit RGB
     wire [3:0] palette_addr_write;
-    wire [5:0] palette_data_write;
+    wire [11:0] palette_data_write;  // 12-bit RGB
     wire palette_we;
+
+    // Writable palette interface signals (256-color for Mode 4)
+    wire [7:0] writable_palette_addr;
+    wire [11:0] writable_palette_data;
+    wire [7:0] writable_palette_write_addr;
+    wire [11:0] writable_palette_write_data;
+    wire writable_palette_we;
+    wire [7:0] palette_result_low, palette_result_high;
     
     // Multiplex palette addresses based on active mode
     assign palette_addr_read_a = video_mode_active ? palette_addr_graphics : palette_addr_text_fg;
     assign palette_addr_read_b = video_mode_active ? 4'h0 : palette_addr_text_bg; // Graphics mode uses single color for now
     
     // RGB output signals from renderers
-    wire [5:0] text_rgb_out, graphics_rgb_out;
+    wire [11:0] text_rgb_out, graphics_rgb_out;  // 12-bit RGB
     wire text_pixel_valid, graphics_pixel_valid;
-    wire [5:0] final_rgb;
+    wire [11:0] final_rgb;  // 12-bit RGB
     
     // Instruction routing
-    wire text_instruction_active, graphics_instruction_active;
+    wire text_instruction_active, graphics_instruction_active, palette_instruction_active;
     assign text_instruction_active = (instruction >= 8'h00 && instruction <= 8'h0F);
     assign graphics_instruction_active = (instruction >= 8'h10 && instruction <= 8'h1F);
+    assign palette_instruction_active = (instruction >= 8'h20 && instruction <= 8'h2F);
     
     // Instruction status multiplexing
     assign instruction_busy = text_instruction_active ? text_instruction_busy : 
@@ -103,9 +112,11 @@ module vga_card_top (
                               graphics_instruction_active ? graphics_instruction_error : 1'b0;
     
     // Result data multiplexing
-    assign final_result_0 = text_instruction_active ? text_result_char_code : 
-                           graphics_instruction_active ? graphics_result_pixel_data : 8'h00;
-    assign final_result_1 = text_instruction_active ? text_result_char_attr : 8'h00;
+    assign final_result_0 = text_instruction_active ? text_result_char_code :
+                           graphics_instruction_active ? graphics_result_pixel_data :
+                           palette_instruction_active ? palette_result_low : 8'h00;
+    assign final_result_1 = text_instruction_active ? text_result_char_attr :
+                           palette_instruction_active ? palette_result_high : 8'h00;
     
     //========================================
     // MODULE INSTANTIATIONS
@@ -142,7 +153,13 @@ module vga_card_top (
         .instruction_error(instruction_error),
         .result_0(final_result_0),
         .result_1(final_result_1),
-        .mode_control(mode_control)
+        .mode_control(mode_control),
+        .palette_write_addr(writable_palette_write_addr),
+        .palette_write_data(writable_palette_write_data),
+        .palette_write_enable(writable_palette_we),
+        .palette_read_data(writable_palette_data),
+        .palette_result_low(palette_result_low),
+        .palette_result_high(palette_result_high)
     );
     
     // Text Mode Module
@@ -195,7 +212,9 @@ module vga_card_top (
         .display_video_addr(display_video_addr),
         .display_video_data(display_video_data),
         .palette_addr(palette_addr_graphics),
-        .palette_data(palette_data_read_a), // Graphics uses single palette port
+        .palette_data(palette_data_read_a), // 16-color fixed palette
+        .writable_palette_addr(writable_palette_addr),
+        .writable_palette_data(writable_palette_data), // 256-color writable palette
         .rgb_out(graphics_rgb_out),
         .pixel_valid(graphics_pixel_valid),
         .result_pixel_data(graphics_result_pixel_data)
@@ -234,7 +253,7 @@ module vga_card_top (
         .data(font_data)
     );
     
-    // Color Palette (dual-port read)
+    // Fixed Color Palette (16-color, dual-port read)
     color_palette palette_inst (
         .clk(clk_25mhz),
         .reset_n(reset_n),
@@ -246,7 +265,18 @@ module vga_card_top (
         .write_data(palette_data_write),
         .write_enable(palette_we)
     );
-    
+
+    // Writable Palette (256-color for Mode 4)
+    writable_palette writable_palette_inst (
+        .clk(clk_25mhz),
+        .reset_n(reset_n),
+        .read_addr(writable_palette_addr),
+        .read_data(writable_palette_data),
+        .write_addr(writable_palette_write_addr),
+        .write_data(writable_palette_write_data),
+        .write_enable(writable_palette_we)
+    );
+
     //========================================
     // VIDEO OUTPUT MULTIPLEXING
     //========================================
@@ -256,22 +286,24 @@ module vga_card_top (
 
     wire screen_edge;
     assign screen_edge = (hcount==0 || hcount ==639 || vcount==0 || vcount==479) ? 1'b1:1'b0;
-   
-    // Convert 6-bit RGB to 2-bit per channel for VGA DAC 
-    // debug code holder((screen_edge)?2'b11:) 
-    assign red   = final_rgb[5:4];      // Upper 2 bits of 6-bit RGB
-    assign green = final_rgb[3:2];      // Middle 2 bits of 6-bit RGB  
-    assign blue  = final_rgb[1:0];      // Lower 2 bits of 6-bit RGB
+
+    // Output 12-bit RGB directly to VGA DAC (4-4-4 format)
+    // Format: final_rgb = {RRRR, GGGG, BBBB}
+    assign red   = final_rgb[11:8];     // Red channel (4 bits)
+    assign green = final_rgb[7:4];      // Green channel (4 bits)
+    assign blue  = final_rgb[3:0];      // Blue channel (4 bits)
     
     //========================================
     // ADDITIONAL LOGIC
     //========================================
     
-    // Future: Add palette write interface for CPU access
+    // Fixed palette write interface (currently unused - read-only)
     assign palette_addr_write = 4'h0;
-    assign palette_data_write = 6'h00;
+    assign palette_data_write = 12'h000;
     assign palette_we = 1'b0;
-    
+
+    // Writable palette write interface - connected to cpu_interface palette instructions
+
     // Future: Connect result outputs from text/graphics modules
     // This would require adding result output ports to the text/graphics modules
     
