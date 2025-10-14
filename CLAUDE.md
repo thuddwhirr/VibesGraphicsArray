@@ -94,7 +94,7 @@ FPGA-based VGA graphics card implementation with text and graphics modes. Curren
 - Command-line editing behavior optimized for interactive shell applications
 - Hardware tested and confirmed working
 
-## Mode 5: Sprite/Tile Graphics - Design Complete
+## Mode 5: Sprite/Tile Graphics - Design Complete with Hardware Scrolling
 
 ### Overview
 NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRITE_DESIGN.md` for complete specification.
@@ -102,10 +102,47 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
 ### Key Features
 - **Resolution**: 320×240 pixels, 8-bit direct RGB (64 colors)
 - **Tile-based background**: 40×30 grid of 8×8 tiles, 4 tilemap pages
+- **Hardware scrolling**: Pixel-perfect smooth scrolling with 2×2 page grid layout
 - **Hardware sprites**: 64 total, 8 per scanline (NES-equivalent)
 - **Sprite attributes**: Stored in registers for parallel evaluation
 - **Priority control**: Per-tile foreground/background with sprite compositing
-- **VBLANK interrupt**: Safe update window for smooth 60fps animation
+- **VBLANK & Scanline interrupts**: Safe update windows for 60fps animation and raster effects
+
+### Hardware Scrolling (NEW)
+- **2×2 Page Grid**: Pages arranged as 640×480 pixel space with horizontal mirroring
+  - Pages 0-1: Top row (horizontal scrolling pair)
+  - Pages 2-3: Bottom row (horizontal scrolling pair)
+  - Seamless wrapping: Page 0 ↔ Page 1, Page 2 ↔ Page 3
+- **SCROLL_X**: 0-639 pixels (9 bits), wraps automatically at 640
+- **SCROLL_Y**: 0-479 pixels (9 bits), wraps automatically at 480
+- **Use cases**: Mario-style platformers, Zelda overworld, vertical shooters
+- **CPU streaming**: Update columns/rows at edges during VBLANK (NES/Dragon Warrior technique)
+
+### Interrupt System (NEW)
+**Status Register ($000F)** optimized for BIT instruction:
+- Bit 0: BUSY (0=ready, 1=busy)
+- Bit 1: ERROR
+- **Bit 6: VBLANK flag** → V flag via BIT
+- **Bit 7: Scanline flag** → N flag via BIT
+
+**VBLANK Interrupt**:
+- Fires at start of vertical blanking (~1.43ms, ~1430 CPU cycles at 1MHz)
+- Safe window for sprite/tilemap/palette updates
+- Enable via Mode Control Register ($0000 bit 5)
+
+**Scanline Interrupt**:
+- Fires at configurable scanline (0-479 via SetScanline instruction)
+- Enables split-screen scrolling, sprite multiplexing, parallax effects
+- Enable via Mode Control Register ($0000 bit 6)
+
+**BIT Instruction Usage**:
+```assembly
+BIT $000F   ; Test status (clears interrupt flags)
+            ; Bit 7 → N flag (Scanline)
+            ; Bit 6 → V flag (VBLANK)
+BMI ScanlineInterrupt
+BVS VBlankInterrupt
+```
 
 ### Memory Architecture (38,168 bytes used / 76,800 total)
 - **2 sprite sheet pages**: 32,768 bytes (`$0000-$7FFF`)
@@ -122,6 +159,7 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
 - **Remaining**: 38,632 bytes for future expansion
 
 ### Complete Instruction Set
+**Sprite/Tile Operations:**
 - **$20 LoadSprite**: Write sprite pixel data (page, index, offset, data)
 - **$21 SetTile**: Set tile with auto priority handling (page, tile index, sprite index, priority)
 - **$22 SetSpriteAttr**: Configure moving sprite (sprite#, X, Y, sprite index, flags)
@@ -129,6 +167,22 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
 - **$24 SetTilemapPage**: Switch active tilemap page (0-3)
 - **$25 WriteVRAM**: Raw VRAM write for bulk loading (16-bit address, data)
 - **$26 ReadVRAM**: Raw VRAM read for debugging (16-bit address)
+
+**Scrolling (NEW):**
+- **$27 SetScrollX**: Set horizontal scroll offset (0-639 pixels)
+- **$28 SetScrollY**: Set vertical scroll offset (0-479 pixels)
+- **$29 SetScroll**: Set both X and Y atomically
+- **$2A SetScanline**: Set scanline interrupt trigger (0-479)
+- **$2B GetScrollX**: Read current SCROLL_X value
+- **$2C GetScrollY**: Read current SCROLL_Y value
+- **$2D GetScanline**: Read current scanline trigger value
+
+### CPU Interface Architecture
+- **$0000**: Mode Control Register (read/write)
+- **$0001**: Instruction opcode (write)
+- **$0002-$000C**: Instruction arguments (11 bytes available)
+- **$000D-$000E**: Result registers (read, for Get instructions)
+- **$000F**: Status register (read, optimized for BIT instruction)
 
 ### Rendering Pipeline
 **Display Configuration:**
@@ -142,11 +196,12 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
   - Clock 0: Parallel match detection (64-bit match vector)
   - Clocks 1-64: Sequential scan for first 8 matching sprites (early exit when 8 found)
   - Typical case: 20-30 clocks
-- Read 45 tilemap/priority bytes: 45 clocks (can overlap with sprite eval)
+- Read 45-46 tilemap/priority bytes: 45 clocks (46 if crossing page boundary)
 - Read sprite line buffers (up to 8 sprites × 8 pixels): 64 clocks
 - Total: ~174 clocks worst case, 146 clocks spare ✓
 
 **Active Scanline (640 VGA clocks = 320 logical pixels × 2):**
+- Apply scroll offsets to determine source page and tile coordinates
 - Background tiles rendered just-in-time (1 VRAM read per logical pixel)
 - Sprites composited from pre-loaded line buffers
 - Priority: Foreground tiles → Sprites 0-7 → Background tiles
@@ -164,6 +219,8 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
 - **Free flip H/V** (combinational logic, no extra clocks)
 - **Sequential sprite scan** vs hardware priority encoder (simple, fits timing budget, easy to verify)
 - **2×2 pixel doubling** (320×240 logical → 640×480 VGA, doubles timing budget for hblank operations)
+- **2×2 page grid with horizontal mirroring** (matches NES vertical mirroring model)
+- **Status register bits 6/7 for interrupts** (optimized for 6502 BIT instruction)
 
 ### Asset Workflow
 1. Design sprites/tiles in Aseprite/GIMP (visual 2D layout)
@@ -174,6 +231,7 @@ NES-style sprite/tile graphics mode for retro game development. See `MODE5_SPRIT
    - Packed priority bit-plane
 4. Bulk load via WriteVRAM instruction
 5. Update sprite positions via SetSpriteAttr (60fps)
+6. Update scroll registers via SetScrollX/Y for smooth camera movement
 
 ### Future: 256-Color Palette
 - Shared 256×12bit palette for Mode 4 & 5 (always active)

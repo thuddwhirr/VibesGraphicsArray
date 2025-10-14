@@ -288,6 +288,101 @@ Byte 3: Flags
 
 **Usage**: Verify loaded data, debugging, collision detection helpers
 
+#### $27 SetScrollX
+**Description**: Set horizontal scroll offset for smooth scrolling.
+
+**Arguments**:
+- `$0002`: SCROLL_X low byte (bits 0-7)
+- `$0003`: SCROLL_X high bit (bit 0 = SCROLL_X bit 8) - **Execute on update**
+
+**Range**: 0-639 pixels (wraps automatically at 640)
+
+**Usage**:
+- Horizontal scrolling games (Mario): Increment each frame for smooth movement
+- Open world games: Update based on camera position
+- Set to 0 for non-scrolling games or room-based games
+
+**Note**: Can be updated anytime, but typically updated during VBLANK for tear-free scrolling
+
+#### $28 SetScrollY
+**Description**: Set vertical scroll offset for smooth scrolling.
+
+**Arguments**:
+- `$0002`: SCROLL_Y low byte (bits 0-7)
+- `$0003`: SCROLL_Y high bit (bit 0 = SCROLL_Y bit 8) - **Execute on update**
+
+**Range**: 0-479 pixels (wraps automatically at 480)
+
+**Usage**:
+- Vertical scrolling games: Increment each frame for smooth movement
+- Open world games: Update based on camera position
+- Zelda-style room transitions: Animate from 0→240 or 240→0
+- Set to 0 for non-scrolling games
+
+**Note**: Can be updated anytime, but typically updated during VBLANK for tear-free scrolling
+
+#### $29 SetScroll (Combined)
+**Description**: Set both X and Y scroll offsets with a single instruction (optional convenience instruction).
+
+**Arguments**:
+- `$0002`: SCROLL_X low byte
+- `$0003`: SCROLL_X high bit (bit 0)
+- `$0004`: SCROLL_Y low byte
+- `$0005`: SCROLL_Y high bit (bit 0) - **Execute on update**
+
+**Usage**: Update both scroll registers atomically during VBLANK
+
+**Note**: Equivalent to calling SetScrollX then SetScrollY, but may be more efficient
+
+#### $2A SetScanline
+**Description**: Set scanline interrupt trigger position.
+
+**Arguments**:
+- `$0002`: SCANLINE_TRIGGER low byte (bits 0-7)
+- `$0003`: SCANLINE_TRIGGER high bit (bit 0) - **Execute on update**
+
+**Range**: 0-479 (physical VGA scanlines)
+
+**Usage**:
+- Split-screen effects: Set to scanline where screen region changes
+- Sprite multiplexing: Set to scanline where sprites should be repositioned
+- Typically set once during initialization, not updated frequently
+
+**Note**: Must enable scanline interrupt in Mode Control Register ($0000 bit 6) for interrupt to fire
+
+#### $2B GetScrollX
+**Description**: Read current horizontal scroll offset.
+
+**Arguments**: None - **Execute immediately**
+
+**Returns**:
+- `$000D`: SCROLL_X low byte (bits 0-7)
+- `$000E`: SCROLL_X high bit (bit 0 in LSB position, bits 1-7 are 0)
+
+**Usage**: Read back current scroll position for calculations or debugging
+
+#### $2C GetScrollY
+**Description**: Read current vertical scroll offset.
+
+**Arguments**: None - **Execute immediately**
+
+**Returns**:
+- `$000D`: SCROLL_Y low byte (bits 0-7)
+- `$000E`: SCROLL_Y high bit (bit 0 in LSB position, bits 1-7 are 0)
+
+**Usage**: Read back current scroll position for calculations or debugging
+
+#### $2D GetScanline
+**Description**: Read current scanline interrupt trigger position.
+
+**Arguments**: None - **Execute immediately**
+
+**Returns**:
+- `$000D`: SCANLINE_TRIGGER low byte (bits 0-7)
+- `$000E`: SCANLINE_TRIGGER high bit (bit 0 in LSB position, bits 1-7 are 0)
+
+**Usage**: Read back scanline trigger setting for debugging or dynamic adjustment
+
 ## Hardware Implementation Notes
 
 ### Dual-Port BRAM Usage
@@ -411,11 +506,132 @@ Byte 3: Flags
 
 **Status**: Design complete, pending 12-bit color hardware implementation.
 
-### Other Potential Additions
-1. **Hardware scrolling**: X/Y offset registers for tilemap
-2. **Sprite scaling**: 2×2 tile sprites (16×16 pixels)
-3. **Scanline effects**: Per-line X scroll for parallax
-4. **Collision detection**: Hardware sprite-to-sprite collision flags
+### Hardware Scrolling
+
+**Overview**: Pixel-level smooth scrolling with automatic page wrapping, supporting both horizontal scrollers (Mario-style) and open-world games (Zelda-style).
+
+#### Scroll Registers
+
+**SCROLL_X Register** (9 bits, $0010):
+- **Range**: 0-639 pixels (covers two 320-pixel pages side-by-side)
+- **Wrapping**: Automatically wraps at 640 (back to 0)
+- **Page mapping**:
+  - 0-319: Primary viewing Page 0
+  - 320-639: Primary viewing Page 1
+  - At boundaries, viewport spans both pages
+
+**SCROLL_Y Register** (9 bits, $0011):
+- **Range**: 0-479 pixels (covers two 240-pixel pages stacked)
+- **Wrapping**: Automatically wraps at 480 (back to 0)
+- **Page mapping**:
+  - 0-239: Primary viewing Page 0 or 1 (depending on SCROLL_X)
+  - 240-479: Primary viewing Page 2 or 3 (depending on SCROLL_X)
+
+#### Page Grid Layout (2×2 with Horizontal Mirroring)
+
+```
+        SCROLL_X →
+         0-319   320-639
+       ┌─────────┬─────────┐
+  0-239│ Page 0  │ Page 1  │  SCROLL_Y
+       │         │         │     ↓
+240-479│ Page 2  │ Page 3  │
+       └─────────┴─────────┘
+```
+
+**Horizontal Mirroring** (Pages 0↔1, Pages 2↔3):
+- When SCROLL_X wraps from 639→0, viewport seamlessly continues from Page 1 back to Page 0
+- Creates infinite horizontal scrolling: Page 0 → Page 1 → Page 0 → Page 1 → ...
+- Same pattern for bottom row: Page 2 → Page 3 → Page 2 → Page 3 → ...
+
+**Use Cases**:
+- **Horizontal scrollers** (Mario): Use Pages 0-1 or Pages 2-3, CPU streams columns at right edge
+- **Vertical scrollers**: Use Pages 0+2 or Pages 1+3 (wraps at Y=480)
+- **Open world** (Zelda overworld): Use all 4 pages as 640×480 world, CPU streams edges
+- **Zelda dungeons**: Disable scrolling (SCROLL_X=0, SCROLL_Y=0), use instant page switching for room transitions
+
+#### Coordinate Mapping
+
+**Logical Screen Coordinates** → **Tilemap Coordinates**:
+
+```verilog
+// Add scroll offset to screen position
+scrolled_x = (pixel_x + SCROLL_X) % 640;
+scrolled_y = (pixel_y + SCROLL_Y) % 480;
+
+// Determine which page (0-3)
+page_x = scrolled_x / 320;  // 0 or 1
+page_y = scrolled_y / 240;  // 0 or 1
+tilemap_page = page_y * 2 + page_x;  // 0,1,2,3
+
+// Coordinates within selected page
+tile_x = (scrolled_x % 320) / 8;  // 0-39
+tile_y = (scrolled_y % 240) / 8;  // 0-29
+```
+
+**Example (SCROLL_X = 310, SCROLL_Y = 0)**:
+- Left 10 pixels: From Page 0, columns 38-39
+- Right 310 pixels: From Page 1, columns 0-38
+- Viewport seamlessly spans both pages
+
+#### Rendering Pipeline Integration
+
+**Stage 1: Horizontal Blanking**
+1. Calculate which pages will be visible on next scanline (based on SCROLL_Y)
+2. If near page boundary, may need to fetch tiles from 2 pages (e.g., 35 tiles from Page 0, 5 tiles from Page 1)
+3. Read up to 45 sprite indices and 6 priority bytes (5 bytes if single page, 6 if crossing boundary)
+4. Perform sprite evaluation (unchanged)
+
+**Stage 2: Active Scanline**
+1. For each pixel, apply scroll offsets to determine source page and tile coordinates
+2. Read sprite pixel data from pre-loaded buffers
+3. Composite sprites with scrolled background
+4. Output pixel value (doubled for VGA timing)
+
+**Timing Impact**:
+- Additional coordinate arithmetic fits within combinational logic (no extra clocks)
+- May need 1 extra read during blanking when crossing page boundaries (45→46 reads worst case)
+- Still fits comfortably in ~320 clock horizontal blanking budget
+
+#### CPU Update Strategy
+
+**For Horizontal Scrolling** (Mario-style):
+1. CPU detects when SCROLL_X crosses an 8-pixel boundary
+2. Calculates which column just scrolled off-screen (left edge)
+3. Writes new column data to that position from compressed level data
+4. Column wraps around and appears at right edge when viewport reaches it
+
+**For Open World Scrolling** (Zelda overworld):
+1. CPU maintains 2-tile border around visible area (as described in circular buffer technique)
+2. Updates columns/rows at edges as player moves
+3. Hardware scroll registers eliminate need for modulo arithmetic in rendering
+
+**For Room Transitions** (Zelda dungeons):
+1. Disable scrolling or keep at fixed positions (e.g., SCROLL_X=0, SCROLL_Y=0)
+2. Use SetTilemapPage for instant room switches
+3. Optional: Animate SCROLL_X/SCROLL_Y for smooth transitions between rooms
+
+### Circular Buffer Scrolling (Alternative Software Technique)
+
+**Note**: For games that don't need pixel-smooth scrolling, the existing 40×30 tilemap pages support NES/Dragon-Warrior-style seamless scrolling without using hardware scroll registers.
+
+**Technique Overview**:
+- **Visible area**: Configure smaller viewport (e.g., 36×26 tiles = 288×208 pixels)
+- **Border margin**: 2-tile border on all edges (off-screen for tile updates)
+- **CPU streaming**: Continuously write new tiles at edges as player moves
+- **Coordinate wrapping**: Software implements `tile_x = (camera_x + pixel_x) % 40`, `tile_y = (camera_y + pixel_y) % 30`
+
+**Benefits**:
+- All 4 tilemap pages remain independent (different maps/levels)
+- Simpler hardware (no scroll registers needed)
+- Matches Dragon Warrior/NES RPG scrolling model
+
+**Trade-off**: Movement snaps by tiles (8 pixels) instead of smooth pixel-by-pixel scrolling.
+
+### Other Potential Hardware Additions
+1. **Sprite scaling**: 2×2 tile sprites (16×16 pixels)
+2. **Scanline effects**: Per-line X scroll for parallax
+3. **Collision detection**: Hardware sprite-to-sprite collision flags
 
 ### SDRAM Integration (Future)
 If SDRAM controller is integrated:
@@ -428,17 +644,25 @@ If SDRAM controller is integrated:
 
 ### Interrupt Configuration
 
-**Mode Control Register ($0000)** - Extended bits:
+**Mode Control Register ($0000)**:
 - Bits 0-4: Existing (mode, active page, working page, video active)
 - **Bit 5: VBLANK interrupt enable** (0=disabled, 1=enabled)
-- **Bit 6: Scanline interrupt enable** (0=disabled, 1=enabled) - reserved for future
+- **Bit 6: Scanline interrupt enable** (0=disabled, 1=enabled)
+- Bit 7: Reserved
 
-**Status Register ($000F)** - Extended bits:
-- Bit 0: BUSY (existing)
-- Bit 1: ERROR (existing)
-- **Bit 3: VBLANK flag** (set by hardware at start of vertical blanking, cleared on read)
-- **Bit 4: Scanline flag** (reserved for future - set at specific scanline)
-- Bit 7: READY (existing)
+**Status Register ($000F)** - Optimized for BIT instruction:
+- **Bit 0: BUSY** (0=ready, 1=busy)
+- **Bit 1: ERROR** (instruction error occurred)
+- Bits 2-5: Reserved
+- **Bit 6: VBLANK flag** (set at start of vertical blanking, cleared on read) → **V flag** via BIT
+- **Bit 7: Scanline flag** (set when scanline reaches trigger value, cleared on read) → **N flag** via BIT
+
+**Note**: Reading $000F clears both interrupt flags (bits 6 and 7). The BIT instruction is ideal for testing interrupt flags as bits 6 and 7 map directly to CPU V and N flags.
+
+**Scanline Trigger (Internal Register)**:
+- Set via **$2A SetScanline** instruction
+- Range: 0-479 (physical VGA scanlines)
+- Not directly CPU-addressable (uses instruction interface)
 
 ### Interrupt Behavior
 
@@ -451,10 +675,14 @@ If SDRAM controller is integrated:
 - Safe time window for updating sprites, tilemap, palette
 - Standard pattern used by NES, SNES, Genesis, Amiga
 
-**Scanline Interrupt (Future):**
-- Would fire after horizontal blanking completes (after sprite buffers loaded)
-- Allows mid-frame sprite updates for multiplexing effects (C64 style)
-- CPU could update sprite attributes for scanline N+2
+**Scanline Interrupt:**
+- Fires after horizontal blanking completes at the scanline specified in SCANLINE_TRIGGER registers
+- Triggers when physical VGA scanline counter equals SCANLINE_TRIGGER value (0-479)
+- Allows mid-frame updates for advanced effects:
+  - **Split-screen scrolling**: Change SCROLL_X/SCROLL_Y mid-frame (status bar vs playfield)
+  - **Sprite multiplexing**: Move sprites to new positions for next screen region (C64 style)
+  - **Parallax scrolling**: Different scroll speeds for different screen regions
+  - **Raster effects**: Palette changes, mode switches per scanline
 
 ### Programming Notes
 
@@ -462,7 +690,7 @@ If SDRAM controller is integrated:
 
 **Recommended patterns:**
 
-**Interrupt-driven (preferred):**
+**Interrupt-driven with BIT instruction (preferred):**
 ```assembly
 ; Enable VBLANK interrupt
 LDA $0000
@@ -471,14 +699,80 @@ STA $0000
 
 ; In IRQ handler:
 IRQ_Handler:
-  LDA $000F   ; Read status (clears VBLANK flag, deasserts IRQ)
-  AND #$08    ; Check bit 3
-  BEQ NotVBlank
+  BIT $000F   ; Test status (clears interrupt flags)
+              ; Bit 7 → N flag (Scanline)
+              ; Bit 6 → V flag (VBLANK)
 
+  BVS VBlankOccurred   ; Branch if V set (bit 6)
+  RTI                  ; No VBLANK, spurious IRQ
+
+VBlankOccurred:
   ; Update sprites during vblank
   JSR UpdateSprites
+  RTI
+```
 
-NotVBlank:
+**Scanline interrupt (split-screen scrolling example):**
+```assembly
+; Set scanline interrupt to trigger at scanline 160 (1/3 down screen)
+LDA #160      ; Low byte
+STA $0002
+LDA #0        ; High byte
+STA $0003
+LDA #$2A      ; SetScanline instruction
+STA $0001
+
+; Enable both VBLANK and Scanline interrupts
+LDA $0000
+ORA #$60      ; Set bits 5 and 6
+STA $0000
+
+; In IRQ handler:
+IRQ_Handler:
+  BIT $000F   ; Test status (clears both interrupt flags)
+              ; Bit 7 → N flag (Scanline)
+              ; Bit 6 → V flag (VBLANK)
+
+  BMI ScanlineInterrupt   ; Branch if N set (bit 7)
+  BVS VBlankInterrupt     ; Branch if V set (bit 6)
+  RTI                     ; Neither set, spurious IRQ
+
+ScanlineInterrupt:
+  ; Scanline 160 reached - change scroll for status bar
+  LDA #0
+  STA $0002
+  STA $0003
+  LDA #$27    ; SetScrollX = 0
+  STA $0001
+
+  LDA #0
+  STA $0002
+  STA $0003
+  LDA #$28    ; SetScrollY = 0
+  STA $0001
+
+  BVC Done    ; If only scanline interrupt, done
+  ; Fall through to handle VBLANK too if both set
+
+VBlankInterrupt:
+  ; VBLANK - restore scroll for playfield, update game state
+  LDA GameScrollX
+  STA $0002
+  LDA GameScrollX+1
+  STA $0003
+  LDA #$27    ; SetScrollX
+  STA $0001
+
+  LDA GameScrollY
+  STA $0002
+  LDA GameScrollY+1
+  STA $0003
+  LDA #$28    ; SetScrollY
+  STA $0001
+
+  JSR UpdateSprites
+
+Done:
   RTI
 ```
 
@@ -486,19 +780,27 @@ NotVBlank:
 ```assembly
 ; Disable interrupts, poll VBLANK flag
 LDA $0000
-AND #$DF      ; Clear bit 5
+AND #$9F      ; Clear bits 5 and 6 (disable both interrupts)
 STA $0000
 
 WaitVBlank:
-  LDA $000F
-  AND #$08    ; Check VBLANK flag
-  BEQ WaitVBlank
+  BIT $000F   ; Test status (clears flags)
+  BVS VBlankOccurred
+  JMP WaitVBlank
 
+VBlankOccurred:
   ; VBLANK occurred, update sprites
   JSR UpdateSprites
 ```
 
-**Do NOT mix:** Don't enable interrupts and then poll $000F, as the polling will clear interrupt flags.
+**Do NOT mix:** Don't enable interrupts and then poll $000F, as polling will clear interrupt flags and cause missed interrupts.
+
+**BIT Instruction Benefits:**
+- Single instruction reads and tests status register
+- Bit 7 → N flag (Scanline interrupt)
+- Bit 6 → V flag (VBLANK interrupt)
+- Use BMI to test N flag, BVS to test V flag
+- More efficient than LDA + AND + BEQ
 
 ### Timing Considerations
 
