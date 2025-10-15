@@ -243,6 +243,87 @@ BVS VBlankInterrupt
 - Binary-weighted resistor DAC values calculated (0.7V into 75Ω VGA, ±2.5% error)
 - Status: Design complete with resistor values, pending hardware build
 
+## Mode 5 Implementation Plan - In Progress
+
+### Current Status
+- **Branch**: `feature/mode5-implementation`
+- **Phase**: Ready to start Phase 1 (Static Background Tiles)
+- **Strategy**: Incremental implementation with 12 phases for straightforward verification
+
+### Implementation Phases
+
+**Phase 1: Static Background Tiles** ← NEXT
+- Allocate VRAM for sprite sheet (256 sprites × 64 bytes) and tilemap (1,200 bytes)
+- Hardcode test patterns in Verilog (red/green checkerboard)
+- Implement tile fetching during hblank (40-byte buffer)
+- Implement pixel rendering with 2×2 doubling
+- **Success**: Display checkerboard on power-on
+
+**Phase 2: CPU Instructions for Tilemap Setup**
+- Add $25 WriteVRAM (raw VRAM write)
+- Add $21 SetTile (simplified, no priority yet)
+- **Success**: CPU writes "HELLO" using tiles
+
+**Phase 3: Multiple Tilemap Pages**
+- Expand to 4 × 1,200 byte tilemap pages
+- Add $24 SetTilemapPage instruction
+- **Success**: Switch between 4 different screens
+
+**Phase 4: Priority Bit-Plane**
+- Add 150-byte priority plane per page (8 tiles packed per byte)
+- Update $21 SetTile to accept priority argument
+- **Success**: Mark foreground tiles (matters when sprites added)
+
+**Phase 5: Hardware Scrolling**
+- Add SCROLL_X/Y internal registers (9 bits each)
+- Add $27 SetScrollX, $28 SetScrollY instructions
+- Implement coordinate mapping with page boundary handling
+- **Success**: Smooth scroll through 2×2 page grid
+
+**Phase 6: Sprite Attribute Registers**
+- 64 × 4-byte register file in flip-flops
+- Add $22 SetSpriteAttr instruction
+- **Success**: Write/read sprite attributes
+
+**Phase 7: Sprite Evaluation**
+- Parallel match detection (all 64 sprites)
+- Sequential priority scan (find first 8)
+- **Success**: Debug signals show correct sprites selected
+
+**Phase 8: Sprite Line Buffer Loading**
+- 8 × 8-byte line buffers (64 bytes flip-flops)
+- Pre-fetch sprite pixels during hblank
+- Handle flip H/V flags
+- **Success**: Line buffers contain correct data
+
+**Phase 9: Sprite Compositor**
+- Check X position overlap for 8 active sprites
+- Priority compositor (foreground tiles → sprites → background tiles)
+- **Success**: Sprites display over scrolling background
+
+**Phase 10: VBLANK Interrupt**
+- VBLANK flag (bit 6 in $000F)
+- VBLANK enable (bit 5 in $0000)
+- IRQ output logic
+- **Success**: IRQ fires 60Hz, smooth updates
+
+**Phase 11: Scanline Interrupt**
+- SCANLINE_TRIGGER register via $2A instruction
+- Scanline flag (bit 7 in $000F)
+- **Success**: Split-screen effect working
+
+**Phase 12: Get Instructions & Polish**
+- Add $2B GetScrollX, $2C GetScrollY, $2D GetScanline
+- Add $26 ReadVRAM
+- Bug fixes and optimizations
+- **Success**: Full game demo
+
+### Key Design Decisions from Research
+- **NES nametables**: 256×240 pixels (same as screen size, not larger)
+- **NES scrolling**: Used 2 physical nametables with mirroring, CPU streamed tile updates
+- **Circular buffer technique**: 2-tile border around visible area for CPU updates
+- **Our advantage**: 4 full independent pages (better than NES's 2 physical pages)
+
 ## Project Roadmap
 
 ### Hardware Development Schedule
@@ -250,12 +331,12 @@ BVS VBlankInterrupt
 2. **SD Card Interface (Breadboard)**: 6522 VIA → SPI → SD Card, test filesystem drivers
 3. **SD Card Parallel Interface**: Evaluate parallel design for faster access
 4. **SD Card PCB**: Build production hardware for winning design (SPI vs parallel)
-5. **Mode 5 Implementation**: Implement sprite/tile system (requires filesystem for asset loading)
+5. **Mode 5 Implementation**: In progress (12-phase incremental approach)
 6. **Sound System**: FPGA OPL2 (Yamaha) + 1-bit delta-sigma DAC
 
 ### Software/Firmware Tasks
 - Filesystem driver development and testing
 - Asset preprocessor tool (TGA → sprite/tilemap data)
-- Mode 5 sprite compositor Verilog implementation
+- Mode 5 sprite compositor Verilog implementation (in progress)
 - Game engine / demo applications
 - Audio synthesis and mixing
