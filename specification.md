@@ -25,23 +25,27 @@ The card interfaces with a 65C02 computer bus similar to a 6522 VIA chip. The CP
 
 ### Graphics Modes
 - **Mode 1**: 640×480×2 colors, 2 pages, 1 bit/pixel (38,400 bytes/page)
-- **Mode 2**: 640×480×4 colors, 1 page, 2 bits/pixel (76,800 bytes)  
+- **Mode 2**: 640×480×4 colors, 1 page, 2 bits/pixel (76,800 bytes)
 - **Mode 3**: 320×240×16 colors, 2 pages, 4 bits/pixel (38,400 bytes/page)
-- **Mode 4**: 320×240×64 colors, 1 page, 8 bits/pixel (76,800 bytes)
+- **Mode 4**: 320×240×256 colors, 1 page, 8 bits/pixel (76,800 bytes)
 
 ### Color System
-- 6-bit RGB output (2 bits per channel)
-- 16-color palette with authentic EGA-style colors:
+- 12-bit RGB output (4 bits per channel) via external DAC
+- **16-color fixed palette** (Modes 1-3) with authentic EGA-style colors:
   - 0=Black, 1=White, 2=Bright Green, 3=Dark Green, 4=Red, 5=Blue
   - 6=Yellow, 7=Magenta, 8=Cyan, 9=Dark Red, 10=Dark Blue, 11=Brown
   - 12=Gray, 13=Dark Gray, 14=Light Green, 15=Light Blue
-- Mode 4 bypasses palette for direct 6-bit RGB
+- **256-color writable palette** (Mode 4):
+  - Programmable via SET_PALETTE_ENTRY instruction ($20)
+  - 12-bit RGB per entry (4096 color gamut)
+  - Enables palette effects: color cycling, fades, screen flashes
 
 ### Memory Model
 - **Text**: 2,560×16-bit BRAM (ring buffer organization)
 - **Graphics**: 76,800×8-bit BRAM (shared across all graphics modes)
 - **Font**: 4,096×8-bit ROM (256 characters × 16 rows)
-- **Palette**: 16×6-bit RAM (updateable color table)
+- **Fixed Palette**: 16×12-bit RAM (Modes 1-3, currently read-only)
+- **Writable Palette**: 256×12-bit distributed RAM (Mode 4, programmable)
 
 ## Control Interface
 
@@ -229,6 +233,45 @@ STA $0005   ; Execute read
 LDA $000D   ; Get pixel value
 ```
 
+### Palette Instructions (Mode 4 only)
+
+#### $20 SetPaletteEntry
+**Description**: Write a 12-bit RGB color value to the 256-color writable palette. Only affects Mode 4 (320×240×256).
+
+**Arguments**:
+- `$0002`: Palette index (0-255)
+- `$0003`: RGB low byte (bits 7:4 = green, bits 3:0 = blue)
+- `$0004`: RGB high byte (bits 3:0 = red, bits 7:4 unused) - **Execute instruction on update**
+
+**Usage Example**:
+```assembly
+LDA #$00    ; Palette index 0
+STA $0002
+LDA #$0F    ; Green=0, Blue=15 (bright blue low bits)
+STA $0003
+LDA #$00    ; Red=0
+STA $0004   ; Write palette entry and execute
+```
+
+#### $21 GetPaletteEntry
+**Description**: Read a 12-bit RGB color value from the 256-color writable palette.
+
+**Arguments**:
+- `$0002`: Palette index (0-255) - **Execute instruction on update**
+
+**Output**:
+- `$000D`: RGB low byte (green[7:4], blue[3:0])
+- `$000E`: RGB high byte (red[3:0], unused[7:4])
+
+**Usage Example**:
+```assembly
+LDA #$05    ; Palette index 5
+STA $0002   ; Execute read
+; Wait for completion...
+LDA $000D   ; Get RGB low byte
+LDA $000E   ; Get RGB high byte (red in bits 3:0)
+```
+
 ## Hardware Interface
 
 ### 6502 Bus
@@ -241,8 +284,9 @@ LDA $000D   ; Get pixel value
 
 ### VGA Output
 - HSYNC, VSYNC (negative polarity)
-- 6-bit RGB (2 bits each: red[1:0], green[1:0], blue[1:0])
+- 12-bit RGB (4 bits each: red[3:0], green[3:0], blue[3:0])
 - Standard 640×480@60Hz timing (25.175MHz pixel clock)
+- External resistor DAC for analog VGA levels
 
 ## Key Design Features
 - Dual-port memory allows simultaneous read/write operations
@@ -285,9 +329,29 @@ wait_done:
 
 ### Mode Selection
 Write to register $0000 to change video modes:
-- **Bits 2:0**: Video mode (0=text, 1-4=graphics modes)
-- **Bit 3**: Active page for display (modes with 2 pages)
-- **Bit 4**: Working page for writes (modes with 2 pages)
-- **Bit 7**: Video mode active flag (0=text, 1=graphics)
+- **Bits 2:0**: Video mode number
+  - `000` (0) = Text mode (80×30)
+  - `001` (1) = Graphics Mode 1 (640×480×2 colors, 2 pages)
+  - `010` (2) = Graphics Mode 2 (640×480×4 colors, 1 page)
+  - `011` (3) = Graphics Mode 3 (320×240×16 colors, 2 pages)
+  - `100` (4) = Graphics Mode 4 (320×240×256 colors, 1 page)
+- **Bit 3**: Active page for display (modes with 2 pages: Mode 1 and Mode 3)
+- **Bit 4**: Working page for writes (modes with 2 pages: Mode 1 and Mode 3)
+- **Bits 7:5**: Reserved (currently unused)
+
+**Examples**:
+```assembly
+; Text mode
+LDA #$00
+STA $0000
+
+; Graphics Mode 3 (320×240×16)
+LDA #$03
+STA $0000
+
+; Graphics Mode 3, page 1 for display, page 0 for writes
+LDA #$0B    ; %00001011 = page 1 display + mode 3
+STA $0000
+```
 
 The card provides authentic 1980s graphics capabilities with modern FPGA implementation benefits.

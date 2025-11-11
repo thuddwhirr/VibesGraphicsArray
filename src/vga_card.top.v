@@ -40,7 +40,8 @@ module vga_card_top (
     // Mode control
     wire [7:0] mode_control;
     wire video_mode_active;     // 0=text mode, 1=graphics mode
-    assign video_mode_active = mode_control[7];
+    // Text mode is mode 0, all other modes are graphics
+    assign video_mode_active = (mode_control[2:0] != 3'b000);
     
     // Instruction interface signals
     wire [7:0] instruction;
