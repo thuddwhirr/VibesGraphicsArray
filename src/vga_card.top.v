@@ -54,6 +54,7 @@ module vga_card_top (
     // Result signals from modules
     wire [7:0] text_result_char_code, text_result_char_attr;
     wire [7:0] graphics_result_pixel_data;
+    wire [7:0] graphics_result_palette_low, graphics_result_palette_high;
     wire [7:0] final_result_0, final_result_1;
     
     // Memory interface signals
@@ -86,7 +87,6 @@ module vga_card_top (
     wire [7:0] writable_palette_write_addr;
     wire [11:0] writable_palette_write_data;
     wire writable_palette_we;
-    wire [7:0] palette_result_low, palette_result_high;
     
     // Multiplex palette addresses based on active mode
     assign palette_addr_read_a = video_mode_active ? palette_addr_graphics : palette_addr_text_fg;
@@ -98,10 +98,9 @@ module vga_card_top (
     wire [11:0] final_rgb;  // 12-bit RGB
     
     // Instruction routing
-    wire text_instruction_active, graphics_instruction_active, palette_instruction_active;
+    wire text_instruction_active, graphics_instruction_active;
     assign text_instruction_active = (instruction >= 8'h00 && instruction <= 8'h0F);
-    assign graphics_instruction_active = (instruction >= 8'h10 && instruction <= 8'h1F);
-    assign palette_instruction_active = (instruction >= 8'h20 && instruction <= 8'h2F);
+    assign graphics_instruction_active = (instruction >= 8'h10 && instruction <= 8'h2F);  // Includes graphics ($10-$1F) and palette ($20-$2F)
     
     // Instruction status multiplexing
     assign instruction_busy = text_instruction_active ? text_instruction_busy : 
@@ -112,11 +111,15 @@ module vga_card_top (
                               graphics_instruction_active ? graphics_instruction_error : 1'b0;
     
     // Result data multiplexing
+    // Graphics module handles both pixel data and palette results
+    wire palette_instruction;
+    assign palette_instruction = (instruction >= 8'h20 && instruction <= 8'h2F);
+
     assign final_result_0 = text_instruction_active ? text_result_char_code :
-                           graphics_instruction_active ? graphics_result_pixel_data :
-                           palette_instruction_active ? palette_result_low : 8'h00;
+                           (graphics_instruction_active && palette_instruction) ? graphics_result_palette_low :
+                           graphics_instruction_active ? graphics_result_pixel_data : 8'h00;
     assign final_result_1 = text_instruction_active ? text_result_char_attr :
-                           palette_instruction_active ? palette_result_high : 8'h00;
+                           (graphics_instruction_active && palette_instruction) ? graphics_result_palette_high : 8'h00;
     
     //========================================
     // MODULE INSTANTIATIONS
@@ -153,13 +156,7 @@ module vga_card_top (
         .instruction_error(instruction_error),
         .result_0(final_result_0),
         .result_1(final_result_1),
-        .mode_control(mode_control),
-        .palette_write_addr(writable_palette_write_addr),
-        .palette_write_data(writable_palette_write_data),
-        .palette_write_enable(writable_palette_we),
-        .palette_read_data(writable_palette_data),
-        .palette_result_low(palette_result_low),
-        .palette_result_high(palette_result_high)
+        .mode_control(mode_control)
     );
     
     // Text Mode Module
@@ -215,9 +212,14 @@ module vga_card_top (
         .palette_data(palette_data_read_a), // 16-color fixed palette
         .writable_palette_addr(writable_palette_addr),
         .writable_palette_data(writable_palette_data), // 256-color writable palette
+        .palette_write_addr(writable_palette_write_addr),
+        .palette_write_data(writable_palette_write_data),
+        .palette_write_enable(writable_palette_we),
         .rgb_out(graphics_rgb_out),
         .pixel_valid(graphics_pixel_valid),
-        .result_pixel_data(graphics_result_pixel_data)
+        .result_pixel_data(graphics_result_pixel_data),
+        .result_palette_low(graphics_result_palette_low),
+        .result_palette_high(graphics_result_palette_high)
     );
     
     // Character Buffer Memory

@@ -36,12 +36,19 @@ module graphics_mode_module (
     output wire [7:0] writable_palette_addr,   // Palette address (8-bit color index)
     input wire [11:0] writable_palette_data,   // 12-bit RGB color output
 
+    // Writable palette write interface (for SET_PALETTE_ENTRY instruction)
+    output reg [7:0] palette_write_addr,       // Palette write address
+    output reg [11:0] palette_write_data,      // Palette write data (12-bit RGB)
+    output reg palette_write_enable,           // Palette write enable
+
     // RGB output
     output reg [11:0] rgb_out,           // 12-bit RGB to external DAC
     output reg pixel_valid,              // High when rgb_out is valid
-    
-    // Result output for GetPixelAt instruction
-    output wire [7:0] result_pixel_data
+
+    // Result output for GetPixelAt and GET_PALETTE_ENTRY instructions
+    output wire [7:0] result_pixel_data,
+    output wire [7:0] result_palette_low,     // GET_PALETTE_ENTRY low byte
+    output wire [7:0] result_palette_high     // GET_PALETTE_ENTRY high byte
 );
 
     // Graphics mode parameters
@@ -56,6 +63,8 @@ module graphics_mode_module (
     localparam WRITE_PIXEL_POS = 8'h12;
     localparam CLEAR_SCREEN = 8'h13;
     localparam GET_PIXEL_AT = 8'h14;
+    localparam SET_PALETTE_ENTRY = 8'h20;
+    localparam GET_PALETTE_ENTRY = 8'h21;
     
     // Graphics controller state machine states (need 4 bits for additional states)
     localparam IDLE = 4'b0000;
@@ -64,11 +73,13 @@ module graphics_mode_module (
     localparam WRITE_PIXEL_POS_EXEC = 4'b0011;
     localparam CLEAR_SCREEN_EXEC = 4'b0100;
     localparam GET_PIXEL_EXEC = 4'b0101;
-    localparam GET_PIXEL_WAIT = 4'b0110;      // Additional wait state for BRAM settling  
+    localparam GET_PIXEL_WAIT = 4'b0110;      // Additional wait state for BRAM settling
     localparam GET_PIXEL_READ = 4'b1010;      // Read state for GetPixelAt
     localparam RMW_READ = 4'b0111;
     localparam RMW_READ_WAIT = 4'b1000;       // New state for RMW two-cycle read
     localparam RMW_WRITE = 4'b1001;
+    localparam SET_PALETTE_EXEC = 4'b1011;    // Palette write state
+    localparam GET_PALETTE_EXEC = 4'b1100;    // Palette read state
     
     reg [3:0] state;
     
@@ -92,9 +103,13 @@ module graphics_mode_module (
     // Instruction arguments (latched on instruction_start)
     reg [7:0] inst_arg0, inst_arg1, inst_arg2, inst_arg3, inst_arg4, inst_arg5, inst_arg6;
     
-    // Result register
+    // Result registers
     reg [7:0] result_pixel_data_reg;
+    reg [7:0] result_palette_low_reg;
+    reg [7:0] result_palette_high_reg;
     assign result_pixel_data = result_pixel_data_reg;
+    assign result_palette_low = result_palette_low_reg;
+    assign result_palette_high = result_palette_high_reg;
     
     // Instruction start edge detection (synchronize to video_clk domain)
     reg instruction_start_sync1, instruction_start_sync2, instruction_start_prev;
@@ -270,12 +285,21 @@ module graphics_mode_module (
             video_data_out <= 8'h00;
             clear_pixel_counter <= 32'h00000000;
             result_pixel_data_reg <= 8'h00;
+            result_palette_low_reg <= 8'h00;
+            result_palette_high_reg <= 8'h00;
             get_pixel_hold <= 1'b0;
+            palette_write_addr <= 8'h00;
+            palette_write_data <= 12'h000;
+            palette_write_enable <= 1'b0;
+            palette_read_request <= 1'b0;
+            palette_read_addr_reg <= 8'h00;
         end else begin
             // Default values
             instruction_finished <= 1'b0;
             instruction_error <= 1'b0;
             video_we <= 1'b0;
+            palette_write_enable <= 1'b0;
+            palette_read_request <= 1'b0;
             
             // Clear get_pixel_hold after one cycle
             if (get_pixel_hold)
@@ -314,6 +338,14 @@ module graphics_mode_module (
                             end
                             GET_PIXEL_AT: begin
                                 state <= GET_PIXEL_EXEC;
+                                instruction_busy <= 1'b1;
+                            end
+                            SET_PALETTE_ENTRY: begin
+                                state <= SET_PALETTE_EXEC;
+                                instruction_busy <= 1'b1;
+                            end
+                            GET_PALETTE_ENTRY: begin
+                                state <= GET_PALETTE_EXEC;
                                 instruction_busy <= 1'b1;
                             end
                             default: begin
@@ -478,7 +510,7 @@ module graphics_mode_module (
                     video_addr_ctrl_internal <= rmw_address;
                     video_data_out <= rmw_new_data;
                     video_we <= 1'b1;
-                    
+
                     // Advance cursor
                     if (pixel_cursor_x == mode_width - 1) begin
                         pixel_cursor_x <= 16'h0000;
@@ -490,7 +522,32 @@ module graphics_mode_module (
                     end else begin
                         pixel_cursor_x <= pixel_cursor_x + 1;
                     end
-                    
+
+                    state <= IDLE;
+                    instruction_finished <= 1'b1;
+                end
+
+                SET_PALETTE_EXEC: begin
+                    // SET_PALETTE_ENTRY: Write palette entry
+                    // inst_arg0: Palette index (0-255)
+                    // inst_arg1: RGB low byte (GGGG BBBB)
+                    // inst_arg2: RGB high byte (xxxx RRRR)
+                    palette_write_addr <= inst_arg0;
+                    palette_write_data <= {inst_arg2[3:0], inst_arg1[7:4], inst_arg1[3:0]};  // {RRRR, GGGG, BBBB}
+                    palette_write_enable <= 1'b1;
+                    state <= IDLE;
+                    instruction_finished <= 1'b1;
+                end
+
+                GET_PALETTE_EXEC: begin
+                    // GET_PALETTE_ENTRY: Read palette entry
+                    // inst_arg0: Palette index (0-255)
+                    // Set read address and request flag (combinational read in palette module)
+                    palette_read_request <= 1'b1;
+                    palette_read_addr_reg <= inst_arg0;
+                    // The writable_palette has combinational read, so data is available immediately
+                    result_palette_low_reg <= writable_palette_data[7:0];   // GGGG BBBB
+                    result_palette_high_reg <= {writable_palette_data[11:8], 4'h0};  // RRRR 0000
                     state <= IDLE;
                     instruction_finished <= 1'b1;
                 end
@@ -538,8 +595,12 @@ module graphics_mode_module (
         endcase
     end
     
-    // Writable palette address is combinational (async lookup)
-    assign writable_palette_addr = display_pixel_value[7:0];
+    // Writable palette address multiplexing
+    // During GET_PALETTE_ENTRY execution, use instruction argument
+    // Otherwise use pixel value for display rendering
+    reg palette_read_request;
+    reg [7:0] palette_read_addr_reg;
+    assign writable_palette_addr = palette_read_request ? palette_read_addr_reg : display_pixel_value[7:0];
 
     // Generate final RGB output
     always @(posedge video_clk or negedge reset_n) begin
