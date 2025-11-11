@@ -1,12 +1,15 @@
 module text_mode_module (
     input wire video_clk,           // 25.175 MHz pixel clock
     input wire reset_n,             // Active low reset
-    
+
     // VGA timing inputs
     input wire [9:0] hcount,        // Horizontal pixel counter (0-799)
     input wire [9:0] vcount,        // Vertical line counter (0-524)
     input wire display_active,      // High when in display area
-    
+
+    // Mode control (for cursor enable/blink)
+    input wire [7:0] mode_control,  // Mode control register
+
     // Instruction interface from instruction register
     input wire [7:0] instruction,        // Current instruction opcode
     input wire [7:0] arg_data [0:10],    // Argument registers
@@ -358,13 +361,26 @@ module text_mode_module (
     wire [11:0] background_rgb;     //rgb data returned for the background index (12-bit)
     
     // Blink support
-    reg [24:0] blink_counter;
+    reg [24:0] blink_counter;       // Character attribute blink counter
     wire blink_state;
+
+    // Hardware cursor support
+    reg [3:0] cursor_blink_counter; // Cursor blink counter (VSYNC÷16)
+    wire cursor_blink_state;
+    wire cursor_enable;
+    wire cursor_blink_enable;
+    wire at_cursor_position;
 
     assign column_pos = (hcount < 640) ? (hcount + 2) / 8 : 10'd0;
     assign row_pos = (vcount < 480) ? vcount / 16 : 10'd0;
     assign pixel_x = hcount % 4'd8;
     assign pixel_y = (hcount < 640) ? vcount % 5'd16 : (vcount + 1) % 5'd16;
+
+    // Hardware cursor control
+    assign cursor_enable = mode_control[5];       // Bit 5: Cursor enable
+    assign cursor_blink_enable = mode_control[6]; // Bit 6: Cursor blink
+    assign at_cursor_position = (row_pos == cursor_row) && (column_pos == cursor_col);
+    assign cursor_blink_state = cursor_blink_counter[3]; // VSYNC÷16 = bit 3
 
     //calculate address to pass to character memory. Use the shifted column, which will change 2 clock cycles before the actual column. 
     assign disp_char_addr = (((scroll_offset + row_pos) % TOTAL_ROWS) * 8'd80) + column_pos;
@@ -391,7 +407,7 @@ module text_mode_module (
     assign palette_addr_fg = foreground_index;
     assign palette_addr_bg = background_index;
 
-    // Generate blink timing (~1.5Hz blink rate)
+    // Generate blink timing (~1.5Hz blink rate for character attributes)
     always @(posedge video_clk or negedge reset_n) begin
         if (!reset_n) begin
             blink_counter <= 25'h0;
@@ -399,20 +415,49 @@ module text_mode_module (
             blink_counter <= blink_counter + 1;
         end
     end
-    assign blink_state = blink_counter[24]; // ~1.5Hz blink
+    assign blink_state = blink_counter[24]; // ~1.5Hz blink (VSYNC÷32)
+
+    // Generate cursor blink timing (~3.75Hz = VSYNC÷16)
+    // Increment cursor counter on VSYNC (detect start of new frame)
+    reg prev_vcount_zero;
+    wire vsync_pulse;
+    assign vsync_pulse = (vcount == 10'd0) && !prev_vcount_zero;
+
+    always @(posedge video_clk or negedge reset_n) begin
+        if (!reset_n) begin
+            cursor_blink_counter <= 4'h0;
+            prev_vcount_zero <= 1'b0;
+        end else begin
+            prev_vcount_zero <= (vcount == 10'd0);
+            if (vsync_pulse) begin
+                cursor_blink_counter <= cursor_blink_counter + 1;
+            end
+        end
+    end
     
     // Pixel visibility with blink support
     wire show_pixel = font_row[7-pixel_x] && (!blink_bit || blink_state);
-    
+
+    // Hardware cursor visibility logic
+    wire cursor_visible;
+    assign cursor_visible = cursor_enable &&                    // Cursor enabled
+                           at_cursor_position &&               // At cursor position
+                           (!cursor_blink_enable || cursor_blink_state); // Solid or blink ON
+
     //Register rgb_out to prevent timing glitches that cause color bleeding
     always @(posedge video_clk) begin
         pixel_valid <= display_active;
-        
+
         // Register rgb_out for stable VGA timing
         if (display_active) begin
-            rgb_out <= show_pixel ? foreground_rgb : background_rgb;
+            // Show cursor as solid block using foreground color when cursor is visible
+            if (cursor_visible) begin
+                rgb_out <= foreground_rgb;  // Cursor block uses character's foreground color
+            end else begin
+                rgb_out <= show_pixel ? foreground_rgb : background_rgb;  // Normal rendering
+            end
         end else begin
-            rgb_out <= 6'd0;
+            rgb_out <= 12'd0;  // Changed from 6'd0 to 12'd0 for 12-bit RGB
         end
     end
 

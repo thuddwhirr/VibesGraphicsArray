@@ -22,6 +22,9 @@ The card interfaces with a 65C02 computer bus similar to a 6522 VIA chip. The CP
 - 16-bit character format: `{attributes[15:8], char_code[7:0]}`
 - Attributes: foreground[11:8], background[14:12], blink[15]
 - Automatic scrolling when text exceeds bottom row
+- **Hardware cursor**: Block cursor using character's foreground color
+  - Position controlled by TEXT_POSITION instruction
+  - Enable/blink controlled by mode control register bits 5-6
 
 ### Graphics Modes
 - **Mode 1**: 640×480×2 colors, 2 pages, 1 bit/pixel (38,400 bytes/page)
@@ -337,12 +340,22 @@ Write to register $0000 to change video modes:
   - `100` (4) = Graphics Mode 4 (320×240×256 colors, 1 page)
 - **Bit 3**: Active page for display (modes with 2 pages: Mode 1 and Mode 3)
 - **Bit 4**: Working page for writes (modes with 2 pages: Mode 1 and Mode 3)
-- **Bits 7:5**: Reserved (currently unused)
+- **Bit 5**: Hardware cursor enable (Text mode only: 1=visible, 0=hidden)
+- **Bit 6**: Hardware cursor blink (Text mode only: 1=blinking, 0=solid)
+- **Bit 7**: Reserved (currently unused)
 
 **Examples**:
 ```assembly
-; Text mode
+; Text mode with cursor disabled
 LDA #$00
+STA $0000
+
+; Text mode with solid cursor
+LDA #$20    ; %00100000 = cursor enable
+STA $0000
+
+; Text mode with blinking cursor
+LDA #$60    ; %01100000 = cursor enable + blink
 STA $0000
 
 ; Graphics Mode 3 (320×240×16)
@@ -352,6 +365,50 @@ STA $0000
 ; Graphics Mode 3, page 1 for display, page 0 for writes
 LDA #$0B    ; %00001011 = page 1 display + mode 3
 STA $0000
+```
+
+### Hardware Cursor (Text Mode Only)
+
+The hardware cursor provides authentic CRT-style visual feedback in text mode.
+
+**Appearance**:
+- **Block cursor**: Fills entire character cell (8×16 pixels)
+- **Color**: Uses foreground color of character at cursor position
+- **Behavior**: Non-destructive overlay (character data unchanged)
+
+**Position Control**:
+- Set via **TEXT_POSITION ($01)** instruction
+- Position is row/column based (0-29 rows, 0-79 columns)
+- Independent of character write operations
+
+**Blink Characteristics**:
+- **Solid mode** (bit 6 = 0): Always visible
+- **Blink mode** (bit 6 = 1): Toggles at ~3.75 Hz (VSYNC÷16)
+  - 8 frames ON, 8 frames OFF
+  - Synchronized to vertical refresh
+  - Blinks **twice as fast** as character attribute blink
+
+**Cursor over Blinking Character**:
+- Cursor and character blink independently
+- Results in 4-phase cycle over ~0.53 seconds:
+  - Frames 0-7: Cursor visible (character obscured)
+  - Frames 8-15: Character visible (cursor hidden)
+  - Frames 16-23: Cursor visible over blank space
+  - Frames 24-31: Both invisible
+
+**Usage Example**:
+```assembly
+; Enable blinking cursor in text mode
+LDA #$60    ; Cursor enable + blink
+STA $0000   ; Set mode control
+
+; Position cursor at row 10, column 40
+LDA #$01    ; TEXT_POSITION instruction
+STA $0001
+LDA #10     ; Row 10
+STA $0002
+LDA #40     ; Column 40
+STA $0003   ; Execute
 ```
 
 The card provides authentic 1980s graphics capabilities with modern FPGA implementation benefits.

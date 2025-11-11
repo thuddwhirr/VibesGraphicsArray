@@ -167,6 +167,7 @@ module vga_card_top (
         .hcount(hcount),
         .vcount(vcount),
         .display_active(display_active),
+        .mode_control(mode_control),
         .instruction(instruction),
         .arg_data(arg_data),
         .instruction_start(instruction_start & text_instruction_active),
